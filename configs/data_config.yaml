@@ -1,0 +1,23 @@
+# Configuration for data extraction in the CSLR project
+
+# Hand landmarks indices configuration
+hand_landmarks:
+  thumb: [1, 2, 3, 4]
+  indexFinger: [5, 6, 7, 8]
+  middleFinger: [9, 10, 11, 12]
+  ringFinger: [13, 14, 15, 16]
+  pinky: [17, 18, 19, 20]
+  palmBase: [0]
+
+# File paths for raw data storage
+paths:
+  raw_data_root: "data/raw/"
+  rgb_crops: "data/raw/rgb_crops/"
+  skeletal_data: "data/raw/skeletal_data/"
+
+# Extraction settings
+extraction:
+  crop_resolution: [112, 112] # Width, height in pixels
+  normalize_reference: "wrist" # Landmark to normalize skeletal data against
+  max_hands: 2
+  resize_method: "preserve_ratio" # Options: "fixed" or "preserve_ratio"
