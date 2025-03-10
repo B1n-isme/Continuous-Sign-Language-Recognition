@@ -57,13 +57,42 @@ def display_npz_info(data):
         elif key == "crops":
             non_empty = sum(1 for item in array if len(item) > 0)
             print(f"  Frames with hand crops: {non_empty}/{len(array)}")
+            
+            # Analyze crop shapes in detail
+            print(f"  Detailed crop analysis:")
+            
+            # Count frames with different numbers of crops
+            hand_count = {}
+            for item in array:
+                num_hands = len(item) if isinstance(item, np.ndarray) else 0
+                hand_count[num_hands] = hand_count.get(num_hands, 0) + 1
+            
+            for num, count in sorted(hand_count.items()):
+                print(f"    Frames with {num} hands: {count} ({count/len(array)*100:.1f}%)")
+            
+            # Show actual shapes of a few samples
             if non_empty > 0:
-                # Find first non-empty crop
+                print("  Sample crop shapes:")
+                samples_shown = 0
                 for i, item in enumerate(array):
                     if len(item) > 0:
-                        first_crop = item[0]
-                        print(f"  Crop image shape: {first_crop.shape}")
-                        break
+                        print(f"    Frame {i}: {item.shape} - Each crop: ", end="")
+                        if len(item.shape) >= 3:  # Has width, height, channels
+                            print(f"{item[0].shape if item.shape[0] > 0 else 'No crops'}")
+                        else:
+                            print(f"{item.shape}")
+                        samples_shown += 1
+                        # if samples_shown >= 5:  # Show at most 5 samples
+                        #     break
+                
+                # Get all unique crop shapes
+                unique_shapes = set()
+                for item in array:
+                    if len(item) > 0:
+                        for crop in item:
+                            unique_shapes.add(crop.shape)
+                
+                print(f"  Unique crop shapes found: {unique_shapes}")
 
         elif key == "labels":
             if len(array) > 0:
@@ -178,9 +207,6 @@ def main():
         display_npz_info(data)
 
         if args.visualize:
-            # Need to import opencv here for visualization
-            import cv2
-
             visualize_sample(data, args.frames)
 
 

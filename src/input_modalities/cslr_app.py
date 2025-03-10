@@ -323,7 +323,7 @@ class VideoProcessor:
         if has_hands:
             # Initialize data structures
             frame_skeletal = np.zeros((MAX_HANDS, 21, 3))
-            frame_crops = []
+            frame_crops = np.zeros((MAX_HANDS, *CROP_SIZE, 3), dtype=np.uint8)
 
             # Process each detected hand
             for hand_idx, (hand_landmarks, handedness) in enumerate(
@@ -388,7 +388,7 @@ class VideoProcessor:
                                     crop = cv2.resize(crop, CROP_SIZE)
 
                                 # Store the crop
-                                frame_crops.append(crop)
+                                frame_crops[hand_idx] = crop
                             except Exception as e:
                                 st.error(f"Error resizing crop: {e}")
 
@@ -461,13 +461,15 @@ def save_recording_data(video_processor, label_glosses=None):
     # Convert skeletal data to numpy array
     skeletal_array = np.array(video_processor.skeletal_data)
 
-    # Convert crops array (irregular shape)
-    crops_array = np.empty(len(video_processor.crops_data), dtype=object)
-    for i, crops in enumerate(video_processor.crops_data):
-        if crops:
-            crops_array[i] = np.array(crops)
-        else:
-            crops_array[i] = np.array([])
+    # # Convert crops array (irregular shape)
+    # crops_array = np.empty(len(video_processor.crops_data), dtype=object)
+    # for i, crops in enumerate(video_processor.crops_data):
+    #     if crops:
+    #         crops_array[i] = np.array(crops)
+    #     else:
+    #         crops_array[i] = np.array([])
+
+    crops_array = np.array(video_processor.crops_data)
 
     # Generate output filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -480,8 +482,6 @@ def save_recording_data(video_processor, label_glosses=None):
             skeletal_data=skeletal_array,
             crops=crops_array,
             labels=np.array(label_glosses) if label_glosses else np.array([]),
-            crop_size=np.array(CROP_SIZE),
-            max_hands=np.array(MAX_HANDS),
         )
         return output_file
     except Exception as e:
@@ -490,12 +490,21 @@ def save_recording_data(video_processor, label_glosses=None):
 
 
 def app():
-
     # Initialize session state
     if "processor" not in st.session_state:
         st.session_state.processor = VideoProcessor()
         st.session_state.camera_started = False
         st.session_state.last_recording_status = None
+
+    # Initialize glosses_clear_requested flag if needed
+    if "glosses_clear_requested" not in st.session_state:
+        st.session_state.glosses_clear_requested = False
+
+    # Handle glosses clearing if requested
+    if st.session_state.glosses_clear_requested:
+        # Reset the flag first
+        st.session_state.glosses_clear_requested = False
+        # The input will be empty on the next run
 
     # Create placeholder for the video feed
     video_placeholder = st.empty()
@@ -505,6 +514,7 @@ def app():
     glosses_input = st.text_input(
         "Enter glosses (words) for this recording, separated by spaces:",
         key="glosses_input",
+        value="" if st.session_state.get("glosses_clear_requested", False) else None,
     )
 
     # Parse glosses
@@ -513,9 +523,9 @@ def app():
     if glosses:
         st.write("**Detected glosses:**", ", ".join(glosses))
 
-    # Clear button for glosses
+    # Clear button for glosses - modify this to use the flag approach
     if st.button("Clear Glosses"):
-        st.session_state.glosses_input = ""
+        st.session_state.glosses_clear_requested = True
         st.rerun()
 
     # Start camera automatically if not already started
@@ -580,7 +590,7 @@ def app():
                         "Camera active. Show your hands to start recording."
                     )
 
-                time.sleep(0.033)  # ~30 fps
+                # time.sleep(0.033)  # ~30 fps
 
         except Exception as e:
             st.error(f"Error in video processing: {e}")
