@@ -4,6 +4,7 @@ import mediapipe as mp
 import os
 import numpy as np
 import pandas as pd
+import math
 import matplotlib.pyplot as plt
 import threading
 import queue
@@ -353,44 +354,48 @@ class VideoProcessor:
                 for idx, landmark in enumerate(hand_landmarks.landmark):
                     skeletal[idx] = [landmark.x, landmark.y, landmark.z]
 
-                # Normalize relative to wrist
-                wrist = skeletal[WRIST_IDX]
+                # Step 1: Normalize relative to wrist (translation)
+                wrist = skeletal[0]  # WRIST_IDX = 0 in MediaPipe
                 for idx in skeletal:
                     skeletal[idx] = [skeletal[idx][i] - wrist[i] for i in range(3)]
 
-                # Convert to numpy array
-                skeletal_array = np.zeros((21, 3))
-                for idx in skeletal:
-                    skeletal_array[idx] = skeletal[idx]
+                # Step 2: Scale normalization using wrist-to-middle-finger-MCP distance
+                ref_vec = [skeletal[9][i] - skeletal[0][i] for i in range(3)]  # Wrist (0) to middle MCP (9)
+                ref_length = math.sqrt(sum(v * v for v in ref_vec))  # Euclidean norm
+                if ref_length > 0:
+                    for idx in skeletal:
+                        skeletal[idx] = [skeletal[idx][i] / ref_length for i in range(3)]
 
-                # Store in frame data
-                frame_skeletal[hand_idx] = skeletal_array
+                # (Optional) Step 3: Depth-specific normalization
+                z_max = max(abs(skeletal[idx][2]) for idx in skeletal)
+                if z_max > 0:
+                    for idx in skeletal:
+                        skeletal[idx][2] /= z_max
+
+                # # Convert to numpy array
+                # skeletal_array = np.zeros((21, 3))
+                # for idx in skeletal:
+                #     skeletal_array[idx] = skeletal[idx]
+
+                # # Store in frame data
+                # frame_skeletal[hand_idx] = skeletal_array
+
+                # Store skeletal data
+                for idx in skeletal:
+                    frame_skeletal[hand_idx, idx] = skeletal[idx]
 
                 # Get bounding box
                 x_min, y_min, x_max, y_max = get_bounding_box(hand_landmarks, w, h, 20)
 
-                # Check if bounding box is valid
-                if not (x_min >= x_max or y_min >= y_max):
-                    # Extract and crop hand region
-                    if (
-                        0 <= y_min < y_max
-                        and 0 <= x_min < x_max
-                        and y_max <= h
-                        and x_max <= w
-                    ):
-                        crop = frame[y_min:y_max, x_min:x_max].copy()
-                        if crop.size > 0 and crop.shape[0] > 0 and crop.shape[1] > 0:
-                            try:
-                                # Resize crop
-                                if RESIZE_METHOD == "preserve_ratio":
-                                    crop = resize_preserve_aspect_ratio(crop, CROP_SIZE)
-                                else:
-                                    crop = cv2.resize(crop, CROP_SIZE)
-
-                                # Store the crop
-                                frame_crops[hand_idx] = crop
-                            except Exception as e:
-                                st.error(f"Error resizing crop: {e}")
+                # Extract and resize crop
+                if x_max > x_min and y_max > y_min:  # Valid bounding box
+                    crop = frame[y_min:y_max, x_min:x_max].copy()
+                    if crop.size > 0:
+                        if RESIZE_METHOD == "preserve_ratio":
+                            crop = resize_preserve_aspect_ratio(crop, CROP_SIZE)
+                        else:
+                            crop = cv2.resize(crop, CROP_SIZE)
+                        frame_crops[hand_idx] = crop
 
                 # Draw rectangle and label
                 cv2.rectangle(annotated_frame, (x_min, y_min), (x_max, y_max), color, 2)

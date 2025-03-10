@@ -82,8 +82,8 @@ def display_npz_info(data):
                         else:
                             print(f"{item.shape}")
                         samples_shown += 1
-                        # if samples_shown >= 5:  # Show at most 5 samples
-                        #     break
+                        if samples_shown >= 5:  # Show at most 5 samples
+                            break
                 
                 # Get all unique crop shapes
                 unique_shapes = set()

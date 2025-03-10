@@ -1,0 +1,4 @@
+create csv storing label along with filename (preprocessed file)
+collect data as .parquet, store preprocessed and augment into .npz file
+create dataloader with suitable tensor dtype
+each loader per input (skeletal, crop, optical)
