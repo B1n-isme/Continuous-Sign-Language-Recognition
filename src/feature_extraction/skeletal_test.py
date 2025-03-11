@@ -4,7 +4,7 @@ import glob
 import os
 
 # Define folder path where .npz files are stored
-folder_path = "data/preprocessed/"  # Change this to your folder path
+folder_path = "data/processed/"  # Change this to your folder path
 
 # Get a list of all .npz files in the folder
 file_list = glob.glob(os.path.join(folder_path, "*.npz"))

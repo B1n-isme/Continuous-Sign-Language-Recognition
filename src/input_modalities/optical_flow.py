@@ -43,20 +43,21 @@ def compute_optical_flow(crops):
     
     return flow
 
-# Load your .npz file
-data = np.load("data/raw/reshape.npz", allow_pickle=True)
-crops = data["crops"]  # (105, 2, 112, 112, 3)
-skeletal_data = data["skeletal_data"]
-labels = data["labels"]
+if __name__ == "__main__":
+    # Load your .npz file
+    data = np.load("data/raw/recording_20250310_201930.npz", allow_pickle=True)
+    crops = data["crops"]  # (105, 2, 112, 112, 3)
+    skeletal_data = data["skeletal_data"]
+    labels = data["labels"]
 
-# Compute optical flow
-optical_flow = compute_optical_flow(crops)
+    # Compute optical flow
+    optical_flow = compute_optical_flow(crops)
 
-# Save updated .npz with optical flow
-np.savez("data/raw/output_with_flow.npz",
-         skeletal_data=skeletal_data,
-         crops=crops,
-         optical_flow=optical_flow,
-         labels=labels)
+    # Save updated .npz with optical flow
+    np.savez("data/raw/output_with_flow_2.npz",
+            skeletal_data=skeletal_data,
+            crops=crops,
+            optical_flow=optical_flow,
+            labels=labels)
 
-print("Optical flow computed and saved. Shape:", optical_flow.shape)
+    print("Optical flow computed and saved. Shape:", optical_flow.shape)

@@ -57,19 +57,21 @@ def display_npz_info(data):
         elif key == "crops":
             non_empty = sum(1 for item in array if len(item) > 0)
             print(f"  Frames with hand crops: {non_empty}/{len(array)}")
-            
+
             # Analyze crop shapes in detail
-            print(f"  Detailed crop analysis:")
-            
+            print("  Detailed crop analysis:")
+
             # Count frames with different numbers of crops
             hand_count = {}
             for item in array:
                 num_hands = len(item) if isinstance(item, np.ndarray) else 0
                 hand_count[num_hands] = hand_count.get(num_hands, 0) + 1
-            
+
             for num, count in sorted(hand_count.items()):
-                print(f"    Frames with {num} hands: {count} ({count/len(array)*100:.1f}%)")
-            
+                print(
+                    f"    Frames with {num} hands: {count} ({count / len(array) * 100:.1f}%)"
+                )
+
             # Show actual shapes of a few samples
             if non_empty > 0:
                 print("  Sample crop shapes:")
@@ -78,20 +80,22 @@ def display_npz_info(data):
                     if len(item) > 0:
                         print(f"    Frame {i}: {item.shape} - Each crop: ", end="")
                         if len(item.shape) >= 3:  # Has width, height, channels
-                            print(f"{item[0].shape if item.shape[0] > 0 else 'No crops'}")
+                            print(
+                                f"{item[0].shape if item.shape[0] > 0 else 'No crops'}"
+                            )
                         else:
                             print(f"{item.shape}")
                         samples_shown += 1
                         if samples_shown >= 5:  # Show at most 5 samples
                             break
-                
+
                 # Get all unique crop shapes
                 unique_shapes = set()
                 for item in array:
                     if len(item) > 0:
                         for crop in item:
                             unique_shapes.add(crop.shape)
-                
+
                 print(f"  Unique crop shapes found: {unique_shapes}")
 
         elif key == "labels":
@@ -105,13 +109,15 @@ def display_npz_info(data):
             print(f"  Value: {array}")
 
 
-def visualize_sample(data, show_frames=2):
+def visualize_sample(data, show_frames=None, animated=True, pause_time=0.2):
     """
     Visualize sample data from the .npz file.
 
     Args:
         data: Loaded .npz data object
-        show_frames: Number of sample frames to visualize
+        show_frames: Number of sample frames to visualize (None for all frames)
+        animated: Whether to show as animation (True) or static plots (False)
+        pause_time: Time in seconds to pause between frames in animation mode
     """
     if data is None or "crops" not in data or "skeletal_data" not in data:
         return
@@ -126,16 +132,26 @@ def visualize_sample(data, show_frames=2):
         print("No valid frames with hand crops found.")
         return
 
-    # Select a subset of frames to display
-    sample_indices = valid_frames[: min(show_frames, len(valid_frames))]
+    # Select frames to display
+    if show_frames is not None and not animated:
+        # For static display, limit to show_frames
+        sample_indices = valid_frames[: min(show_frames, len(valid_frames))]
+    else:
+        # For animation or if show_frames is None, use all valid frames
+        sample_indices = valid_frames
+
+    # Create a single figure for animation
+    fig = plt.figure(figsize=(15, 5))
 
     for frame_idx in sample_indices:
-        fig = plt.figure(figsize=(15, 5))
+        # Clear previous frame if animating
+        if animated and frame_idx != sample_indices[0]:
+            plt.clf()
 
-        # Plot crops
         frame_crops = crops[frame_idx]
         num_crops = len(frame_crops)
 
+        # Plot crops
         for i, crop in enumerate(frame_crops):
             plt.subplot(1, num_crops + 1, i + 1)
             plt.imshow(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
@@ -173,41 +189,25 @@ def visualize_sample(data, show_frames=2):
         plt.legend()
 
         plt.tight_layout()
-        plt.suptitle(f"Frame {frame_idx}")
-        plt.show()
+        plt.suptitle(f"Frame {frame_idx} / {len(crops)}")
+
+        if animated:
+            plt.pause(pause_time)  # Pause to create animation effect
+        else:
+            plt.show()  # Show static plot and wait for user to close
+
+    if animated:
+        plt.show()  # Keep the final plot displayed
 
 
 def main():
-    """Parse arguments and check npz file."""
-    parser = argparse.ArgumentParser(
-        description="Check the shape and content of .npz files"
-    )
-    parser.add_argument("filepath", help="Path to the .npz file")
-    parser.add_argument(
-        "--visualize", "-v", action="store_true", help="Visualize sample data"
-    )
-    parser.add_argument(
-        "--frames",
-        "-f",
-        type=int,
-        default=2,
-        help="Number of frames to visualize (if --visualize is set)",
-    )
-
-    args = parser.parse_args()
-
-    # Ensure the file exists
-    if not os.path.exists(args.filepath):
-        print(f"Error: File {args.filepath} does not exist")
-        sys.exit(1)
-
-    # Load and display file info
-    data = load_npz_file(args.filepath)
-    if data is not None:
-        display_npz_info(data)
-
-        if args.visualize:
-            visualize_sample(data, args.frames)
+    file_path = "data/raw/recording_20250311_072513.npz"
+    data = load_npz_file(file_path)
+    display_npz_info(data)
+    # Use animated visualization with all valid frames, 0.2 second pause
+    visualize_sample(data, animated=True, pause_time=0.2)
+    # Alternatively for static plots of just a few frames:
+    # visualize_sample(data, show_frames=2, animated=False)
 
 
 if __name__ == "__main__":
