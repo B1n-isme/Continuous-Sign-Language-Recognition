@@ -2,6 +2,7 @@
 import numpy as np
 import torch
 from pathlib import Path
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 class CSLDataset(Dataset):
@@ -22,7 +23,7 @@ class CSLDataset(Dataset):
         crops = data['crops']                  # e.g., (T, 2, 112, 112, 3)
         optical_flow = data['optical_flow']    # e.g., (T-1, 2, 112, 112, 2)
 
-        print(f"File: {file_path}, Crops shape: {crops.shape}")
+        # print(f"File: {file_path}, Crops shape: {crops.shape}")
         assert crops.shape[1] == 2, f"Expected 2 hands, got {crops.shape[1]} in {file_path}"
         
         # Get labels and convert to indices
@@ -41,8 +42,16 @@ class CSLDataset(Dataset):
             'optical_flow': flow_tensor,
             'labels': labels_tensor
         }
+    
+def pad_tensor(t, target_shape):
+    # Create a new tensor of zeros with the target shape, same device and dtype as t.
+    new_tensor = torch.zeros(target_shape, dtype=t.dtype, device=t.device)
+    # Build a tuple of slices for each dimension: [0:s for s in original shape]
+    slices = tuple(slice(0, s) for s in t.shape)
+    new_tensor[slices] = t
+    return new_tensor
 
-def collate_fn2(batch):
+def collate_fn(batch):
     """Pads sequences in a batch to the maximum length."""
     batch = [item for item in batch if item is not None] # Remove None items
     if not batch:
@@ -52,25 +61,42 @@ def collate_fn2(batch):
     optical_flow = [item['optical_flow'] for item in batch]
     labels = [item['labels'] for item in batch]
     
-    # Find max sequence length
+    # Determine maximum temporal lengths for skeletal and optical_flow
     max_T = max(s.shape[0] for s in skeletal)
-    max_label_len = max(l.shape[0] for l in labels)  # For variable-length labels
+    max_A = max(s.shape[1] for s in skeletal)
+    # For optical flow, we need both max temporal length and max "D" dimension
+    max_T_flow = max(f.shape[0] for f in optical_flow)
+    max_D_flow = max(f.shape[1] for f in optical_flow)
     
+    max_label_len = max(l.shape[0] for l in labels)
+
+    # Pad skeletal (assuming skeletal is 4D: [T, ...])
     skeletal_padded = torch.stack([
-        torch.nn.functional.pad(s, (0, 0, 0, 0, 0, 0, 0, max_T - s.shape[0]), mode='constant', value=0)
+        pad_tensor(s, (max_T, max_A, s.shape[2], s.shape[3]))
         for s in skeletal
     ])
+
+    # Pad crops (assuming crops is 5D: [T, 2, 3, 112, 112])
     crops_padded = torch.stack([
-        torch.nn.functional.pad(c, (0, 0, 0, 0, 0, 0, 0, max_T - c.shape[0]), mode='constant', value=0)
+        F.pad(c, (0, 0, 0, 0, 0, 0, 0, 0, 0, max_T - c.shape[0]), mode='constant', value=0)
         for c in crops
     ])
-    max_T_flow = max_T - 1
+
+    # Pad optical flow (5D: [T, D, 2, 112, 112])
+    # Padding order: (W_left, W_right, H_left, H_right, C_left, C_right, D_left, D_right, T_left, T_right)
     flow_padded = torch.stack([
-        torch.nn.functional.pad(f, (0, 0, 0, 0, 0, 0, 0, max_T_flow - f.shape[0]), mode='constant', value=0)
+        F.pad(
+            f,
+            (0, 0, 0, 0, 0, 0, 0, max_D_flow - f.shape[1], 0, max_T_flow - f.shape[0]),
+            mode='constant',
+            value=0
+        )
         for f in optical_flow
     ])
+
+    # Pad labels (-1 as the padding token)
     labels_padded = torch.stack([
-        torch.nn.functional.pad(l, (0, max_label_len - l.shape[0]), mode='constant', value=-1)  # -1 as padding token
+        F.pad(l, (0, max_label_len - l.shape[0]), mode='constant', value=-1)
         for l in labels
     ])
     
@@ -81,7 +107,7 @@ def collate_fn2(batch):
         'labels': labels_padded
     }
 
-def collate_fn(batch):
+def collate_fn2(batch):
     batch = [item for item in batch if item is not None]
     if not batch:
         raise ValueError("Empty batch")

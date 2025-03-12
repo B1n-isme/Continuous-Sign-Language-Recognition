@@ -9,13 +9,13 @@ import sys
 import numpy as np
 import pandas as pd
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from models.model import CSLRModel  # Your CSLR model definition
-from training.csl_dataset import (
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from src.models.model import CSLRModel  # Your CSLR model definition
+from src.training.csl_dataset import (
     CSLDataset,
     collate_fn,
 )  # Dataset and collation utilities
-from utils.label_utils import build_vocab, load_labels  # Vocabulary utilities
+from src.utils.label_utils import build_vocab, load_labels  # Vocabulary utilities
 
 # Set up logging and device
 logging.basicConfig(
@@ -27,7 +27,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if __name__ == "__main__":
     # Paths to datasets and labels
     train_dataset_path = "data/datasets/train_dataset.pt"
-    val_dataset_path = "data/datasets/val_dataset.pt"
+    val_dataset_path = "data/datasets/test_dataset.pt"
     labels_csv = "data/labels.csv"
 
     # Load datasets
@@ -47,6 +47,7 @@ if __name__ == "__main__":
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=2,
+        drop_last=True
     )
     val_loader = DataLoader(
         val_dataset,
@@ -54,6 +55,7 @@ if __name__ == "__main__":
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=2,
+        drop_last=True
     )
 
     print("Successfully loaded datasets!")
@@ -80,7 +82,7 @@ if __name__ == "__main__":
     )
 
     # Training loop
-    num_epochs = 50
+    num_epochs = 1
     best_val_loss = float("inf")
     save_dir = "checkpoints/"
     os.makedirs(save_dir, exist_ok=True)
@@ -118,30 +120,25 @@ if __name__ == "__main__":
         logging.info(f"Epoch {epoch + 1}, Train Loss: {train_loss:.4f}")
 
         # Validation phase
-        model.eval()
+        model.train()  # Ensures the model returns a tensor loss
         val_loss = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 skeletal = batch["skeletal"].to(device)
                 crops = batch["crops"].to(device)
                 optical_flow = batch["optical_flow"].to(device)
-                targets = batch["labels"].to(device)
+                targets = batch["labels"].to(device)  # Ensure targets are passed
 
-                # Dynamic batch size handling
-                current_batch_size = skeletal.size(0)
-                input_lengths = torch.full(
-                    (current_batch_size,), skeletal.size(1), dtype=torch.long
-                ).to(device)
+                input_lengths = torch.full((skeletal.size(0),), skeletal.size(1), dtype=torch.long).to(device)
                 target_lengths = torch.sum(targets != -1, dim=1).to(device)
 
-                loss = model(
-                    skeletal,
-                    crops,
-                    optical_flow,
-                    targets,
-                    input_lengths,
-                    target_lengths,
-                )
+                loss = model(skeletal, crops, optical_flow, targets, input_lengths, target_lengths)
+                
+                # if isinstance(loss, list):
+                #     loss_scalar = torch.stack(tuple(loss)).sum()
+                # elif isinstance(loss, torch.Tensor):
+                #     loss_scalar = loss.sum() if loss.dim() > 0 else loss
+
                 val_loss += loss.item()
 
         val_loss /= len(val_loader)

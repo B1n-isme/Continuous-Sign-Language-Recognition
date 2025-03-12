@@ -17,15 +17,17 @@ if __name__ == "__main__":
     processed_dir = "data/processed"
     labels_csv = "data/labels.csv"
     datasets_dir = "data/datasets"
-    os.makedirs(datasets_dir, exist_ok=True)
 
     # Load labels and build vocabulary
     label_dict = load_labels(labels_csv)
+    # print(label_dict)
     vocab = build_vocab(label_dict)
+    # print(vocab)
     file_dir = list(label_dict.keys())
 
     # Get and split unique sequences
     sequences = get_unique_sequences(file_dir)
+    # print(sequences)
     train_seq, val_seq, test_seq = split_sequences(sequences)
 
     # Get file lists
@@ -42,12 +44,8 @@ if __name__ == "__main__":
     val_dataset = CSLDataset(val_files, label_dict, vocab)
     test_dataset = CSLDataset(test_files, label_dict, vocab)
 
-    # for i in range(5):
-    #     print(train_dataset[i].keys())
-    #     print(train_dataset[i]["skeletal"].shape)
-    #     print(train_dataset[i]["crops"].shape)
-    #     print(train_dataset[i]["optical_flow"].shape)
-    #     print(train_dataset[i]["labels"].shape)
+    # for i in range(len(train_files)):
+    #     print(train_dataset[i]["labels"])
 
     # Save datasets and metadata
     print("Saving datasets to", datasets_dir)
@@ -110,11 +108,10 @@ if __name__ == "__main__":
     print("Successfully loaded datasets!")
 
     # Test the train_loader
-    for batch in train_loader:
+    for batch in loaded_train_loader:
         print(batch.keys())
         print(f"Skeletal: {batch['skeletal'].shape}")
         print(f"Crops: {batch['crops'].shape}")
         print(f"Optical Flow: {batch['optical_flow'].shape}")
         print(f"Labels: {batch['labels'].shape}")
         print(f"Sample labels: {batch['labels'][0]}")
-        break
