@@ -8,6 +8,9 @@ def load_labels(csv_path):
     for _, row in df.iterrows():
         file_path = row['file_path']
         labels = row['labels'].split(',')
+        if not labels or labels == ['']:
+            print(f"Warning: Empty labels for {file_path}")
+            continue
         label_dict[file_path] = labels
     return label_dict
 

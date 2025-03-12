@@ -1,7 +1,6 @@
 # split_data.py
 import os
 import random
-from collections import defaultdict
 
 def get_unique_sequences(file_dir):
     """Extracts unique sequence identifiers from processed files."""
