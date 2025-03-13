@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from spatial_encoding.cnn import CNNEncoder  # Adjust path as needed
-from spatial_encoding.gcn import STGCN       # Adjust path as needed
+from src.models.spatial_encoding.cnn import CNNEncoder  # Adjust path as needed
+from src.models.spatial_encoding.gcn import STGCN       # Adjust path as needed
 
 class SpatialEncoding(nn.Module):
     """

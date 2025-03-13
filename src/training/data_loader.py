@@ -73,6 +73,7 @@ if __name__ == "__main__":
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=2,
+        drop_last=True,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -80,6 +81,7 @@ if __name__ == "__main__":
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=2,
+        drop_last=True,
     )
     test_loader = DataLoader(
         test_dataset,
@@ -87,6 +89,7 @@ if __name__ == "__main__":
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=2,
+        drop_last=True,
     )
 
     # Test loading saved datasets
@@ -103,6 +106,7 @@ if __name__ == "__main__":
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=2,
+        drop_last=True,
     )
 
     print("Successfully loaded datasets!")
@@ -115,3 +119,4 @@ if __name__ == "__main__":
         print(f"Optical Flow: {batch['optical_flow'].shape}")
         print(f"Labels: {batch['labels'].shape}")
         print(f"Sample labels: {batch['labels'][0]}")
+        break

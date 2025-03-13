@@ -34,6 +34,6 @@ for file in files:
 df = pd.DataFrame(data)
 
 # Save to CSV
-output_csv = "data/processed_labels.csv"
+output_csv = "data/labels.csv"
 df.to_csv(output_csv, index=False)
 print(f"Saved label mappings to {output_csv}")

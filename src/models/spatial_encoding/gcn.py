@@ -46,21 +46,23 @@ class STGCNBlock(nn.Module):
         
         # Residual connection
         if stride != 1 or in_channels != out_channels:
-            self.residual = nn.Conv2d(in_channels, out_channels, kernel_size=1, 
-                                    stride=(stride, 1))
+            self.residual = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=(stride, 1)),
+                nn.BatchNorm2d(out_channels)
+            )
         else:
             self.residual = nn.Identity()
 
     def forward(self, x):
-        # x: (B, C, T, V)
-        res = self.residual(x)
+        # x: (B, C, T, V) e.g., (B, 2, T, 21)
+        res = self.residual(x.contiguous())  # Ensure contiguous tensor
         
         # Spatial graph convolution: A @ x
-        x = torch.einsum("vu, bctu -> bctv", (self.A, x))
-        x = self.gcn(x)
+        x = torch.einsum("vu, bctu -> bctv", self.A, x)  # (B, C, T, V)
+        x = self.gcn(x)  # (B, out_channels, T, V)
         
         # Temporal convolution
-        x = self.tcn(x)
+        x = self.tcn(x)  # (B, out_channels, T, V)
         x = self.bn(x)
         
         # Add residual
@@ -75,37 +77,41 @@ class STGCN(nn.Module):
         A = self.graph.A.clone().detach().requires_grad_(False)
         self.register_buffer("A", A)
 
-        # Separate STGCNs for left and right hands
-        self.stgcn_left = nn.ModuleList([STGCNBlock(in_channels, 32, A) if i == 0 else 
-                                        STGCNBlock(32, 32, A) for i in range(num_layers)])
-        self.stgcn_right = nn.ModuleList([STGCNBlock(in_channels, 32, A) if i == 0 else 
-                                         STGCNBlock(32, 32, A) for i in range(num_layers)])
+        # Define layers for both hands
+        layers = []
+        for i in range(num_layers):
+            in_c = in_channels if i == 0 else 32
+            layers.append(STGCNBlock(in_c, 32, A))
+        self.stgcn = nn.ModuleList(layers)
 
-        self.fc_left = nn.Linear(32 * num_joints, out_dim)
-        self.fc_right = nn.Linear(32 * num_joints, out_dim)
+        # Final fully connected layer
+        self.fc = nn.Linear(32 * num_joints, out_dim)
 
     def forward(self, x):
         # x: (B, T, 2, 21, 2) - 2D keypoints for left and right hands
-        left_hand = x[:, :, 0, :, :]  # (B, T, 21, 2)
-        right_hand = x[:, :, 1, :, :] # (B, T, 21, 2)
+        B, T, H, V, C = x.shape  # H=2 (hands), V=21 (joints), C=2 (x, y)
+        left_hand = x[:, :, 0, :, :].permute(0, 3, 1, 2)  # (B, 2, T, 21)
+        right_hand = x[:, :, 1, :, :].permute(0, 3, 1, 2) # (B, 2, T, 21)
 
-        # Permute to (B, C, T, V)
-        left_hand = left_hand.permute(0, 3, 1, 2)  # (B, 2, T, 21)
-        right_hand = right_hand.permute(0, 3, 1, 2) # (B, 2, T, 21)
-
-        # Process each hand
-        for layer in self.stgcn_left:
-            left_hand = layer(left_hand)  # (B, 32, T, 21)
-        for layer in self.stgcn_right:
-            right_hand = layer(right_hand) # (B, 32, T, 21)
+        # Process each hand through STGCN layers
+        for layer in self.stgcn:
+            left_hand = layer(left_hand)    # (B, 32, T, 21)
+            right_hand = layer(right_hand)  # (B, 32, T, 21)
 
         # Reshape and reduce
-        left_hand = left_hand.permute(0, 2, 1, 3).reshape(left_hand.size(0), left_hand.size(2), -1)  # (B, T, 32*21)
-        right_hand = right_hand.permute(0, 2, 1, 3).reshape(right_hand.size(0), right_hand.size(2), -1) # (B, T, 32*21)
+        left_hand = left_hand.permute(0, 2, 1, 3).reshape(B, T, -1)  # (B, T, 32*21)
+        right_hand = right_hand.permute(0, 2, 1, 3).reshape(B, T, -1) # (B, T, 32*21)
 
-        left_features = self.fc_left(left_hand)   # (B, T, 64)
-        right_features = self.fc_right(right_hand) # (B, T, 64)
+        left_features = self.fc(left_hand)   # (B, T, 64)
+        right_features = self.fc(right_hand) # (B, T, 64)
 
-        # Combine features (e.g., concatenate)
-        features = torch.cat([left_features, right_features], dim=-1)  # (B, T, 128)
+        # Stack features for both hands
+        features = torch.stack([left_features, right_features], dim=2)  # (B, T, 2, 64)
         return features
+
+if __name__ == "__main__":
+    # Example usage
+    model = STGCN(in_channels=2, num_joints=21, out_dim=64, num_layers=2)
+    x = torch.randn(4, 191, 2, 21, 2)  # (B, T, 2, 21, 2)
+    out = model(x)
+    print(out.shape)  # Expected: (4, 191, 2, 64)

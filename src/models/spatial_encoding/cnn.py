@@ -10,9 +10,10 @@ class CNNEncoder(nn.Module):
         self.modality = modality.lower()  # "rgb" or "flow"
 
         # Shared backbone: MobileNetV3 Small feature extractor
-        self.cnn = models.mobilenet_v3_small(weights=None)
-        state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth")
-        self.cnn.load_state_dict(state_dict)
+        # self.cnn = models.mobilenet_v3_small(weights=None)
+        # state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth")
+        # self.cnn.load_state_dict(state_dict)
+        self.cnn = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
         self.cnn.eval()
 
 

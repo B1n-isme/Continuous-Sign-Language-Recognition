@@ -21,13 +21,17 @@ from src.utils.label_utils import build_vocab, load_labels  # Vocabulary utiliti
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+# device = torch.device(
+#     "cuda"
+#     if torch.cuda.is_available()
+#     else ("mps" if torch.backends.mps.is_available() else "cpu")
+# )
+device = "cpu"
 
 if __name__ == "__main__":
     # Paths to datasets and labels
     train_dataset_path = "data/datasets/train_dataset.pt"
-    val_dataset_path = "data/datasets/test_dataset.pt"
+    val_dataset_path = "data/datasets/val_dataset.pt"
     labels_csv = "data/labels.csv"
 
     # Load datasets
@@ -46,7 +50,7 @@ if __name__ == "__main__":
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=2,
+        num_workers=0,
         drop_last=True
     )
     val_loader = DataLoader(
@@ -54,7 +58,7 @@ if __name__ == "__main__":
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=2,
+        num_workers=0,
         drop_last=True
     )
 
@@ -64,15 +68,6 @@ if __name__ == "__main__":
     model = CSLRModel(
         vocab_size=vocab_size,
         blank=0,  # Index for blank token in CTC
-        lambda_entropy=0.1,
-        D_skeletal=64,
-        D_cnn=512,
-        D_flow=512,
-        D_temp=256,
-        model_dim=512,
-        num_heads=8,
-        num_layers=4,
-        hidden_dim_rnn=256,
     ).to(device)
 
     # Set up optimizer and scheduler
@@ -82,7 +77,7 @@ if __name__ == "__main__":
     )
 
     # Training loop
-    num_epochs = 1
+    num_epochs = 10
     best_val_loss = float("inf")
     save_dir = "checkpoints/"
     os.makedirs(save_dir, exist_ok=True)
@@ -96,12 +91,10 @@ if __name__ == "__main__":
             crops = batch["crops"].to(device)
             optical_flow = batch["optical_flow"].to(device)
             targets = batch["labels"].to(device)
+            input_lengths = batch["input_lengths"].to(device)  # Use actual lengths from collate_fn
 
             # Dynamic batch size handling
             current_batch_size = skeletal.size(0)
-            input_lengths = torch.full(
-                (current_batch_size,), skeletal.size(1), dtype=torch.long
-            ).to(device)
             target_lengths = torch.sum(targets != -1, dim=1).to(device)  # -1 as padding
 
             # Forward pass
@@ -112,6 +105,7 @@ if __name__ == "__main__":
             # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Gradient clipping
             optimizer.step()
 
             train_loss += loss.item()
@@ -120,25 +114,20 @@ if __name__ == "__main__":
         logging.info(f"Epoch {epoch + 1}, Train Loss: {train_loss:.4f}")
 
         # Validation phase
-        model.train()  # Ensures the model returns a tensor loss
+        model.train()  # Set model to evaluation mode
         val_loss = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 skeletal = batch["skeletal"].to(device)
                 crops = batch["crops"].to(device)
                 optical_flow = batch["optical_flow"].to(device)
-                targets = batch["labels"].to(device)  # Ensure targets are passed
-
-                input_lengths = torch.full((skeletal.size(0),), skeletal.size(1), dtype=torch.long).to(device)
+                targets = batch["labels"].to(device)
+                input_lengths = batch["input_lengths"].to(device)  # Use actual lengths
                 target_lengths = torch.sum(targets != -1, dim=1).to(device)
 
-                loss = model(skeletal, crops, optical_flow, targets, input_lengths, target_lengths)
-                
-                # if isinstance(loss, list):
-                #     loss_scalar = torch.stack(tuple(loss)).sum()
-                # elif isinstance(loss, torch.Tensor):
-                #     loss_scalar = loss.sum() if loss.dim() > 0 else loss
-
+                loss = model(
+                    skeletal, crops, optical_flow, targets, input_lengths, target_lengths
+                )
                 val_loss += loss.item()
 
         val_loss /= len(val_loader)

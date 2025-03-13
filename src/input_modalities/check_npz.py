@@ -201,7 +201,7 @@ def visualize_sample(data, show_frames=None, animated=True, pause_time=0.2):
 
 
 def main():
-    file_path = "data/raw/recording_20250311_072513.npz"
+    file_path = "data/raw/Hello-I-Have-Good-Lunch_1dqXkE.npz"
     data = load_npz_file(file_path)
     display_npz_info(data)
     # Use animated visualization with all valid frames, 0.2 second pause
