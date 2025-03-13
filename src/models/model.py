@@ -7,6 +7,11 @@ from src.models.temporal_encoding.tempconv import TemporalEncoding
 from src.models.sequence_learning.transformer import TransformerSequenceLearning
 from src.models.alignment.enstim_ctc import EnStimCTC
 
+# from spatial_encoding.spatial_encoding import SpatialEncoding
+# from temporal_encoding.tempconv import TemporalEncoding
+# from sequence_learning.transformer import TransformerSequenceLearning
+# from alignment.enstim_ctc import EnStimCTC
+
 class CSLRModel(nn.Module):
     """
     A unified model for Continuous Sign Language Recognition (CSLR) that integrates:
@@ -16,7 +21,8 @@ class CSLRModel(nn.Module):
     - EnStimCTC: Applies Entropy Stimulated CTC loss for training or decodes predictions during inference.
     """
     def __init__(self, vocab_size, D_skeletal=64, D_cnn=512, D_flow=512, D_temp=256, model_dim=512,
-                 num_heads=8, num_layers=4, hidden_dim_rnn=256, blank=0, lambda_entropy=0.1, dropout=0.1):
+                 num_heads=8, num_layers=4, hidden_dim_rnn=256, blank=0, lambda_entropy=0.1, dropout=0.1,
+                 device='cpu'):
         """
         Initialize the CSLR model with its submodules.
 
@@ -39,11 +45,13 @@ class CSLRModel(nn.Module):
         # Total spatial feature dimension
         D_total = D_skeletal + D_cnn + D_flow
 
+        self.device = torch.device(device)
+
         # Spatial Encoding module
-        self.spatial_encoding = SpatialEncoding(D_skeletal, D_cnn, D_flow)
+        self.spatial_encoding = SpatialEncoding(D_skeletal, D_cnn, D_flow).to(device)
 
         # Temporal Encoding module
-        self.temporal_encoding = TemporalEncoding(in_channels=D_total, out_channels=D_temp)
+        self.temporal_encoding = TemporalEncoding(in_channels=D_total, out_channels=D_temp).to(device)
 
         # Transformer Sequence Learning module (improved to output gloss probabilities)
         self.sequence_learning = TransformerSequenceLearning(
@@ -53,7 +61,7 @@ class CSLRModel(nn.Module):
             num_layers=num_layers,
             vocab_size=vocab_size,  # Includes blank token
             dropout=dropout
-        )
+        ).to(device)
 
         # EnStimCTC module for alignment and loss computation
         self.enstim_ctc = EnStimCTC(
@@ -61,7 +69,7 @@ class CSLRModel(nn.Module):
             hidden_dim=hidden_dim_rnn,
             blank=blank,
             lambda_entropy=lambda_entropy
-        )
+        ).to(device)
 
     def forward(self, skeletal, crops, optical_flow, targets=None, input_lengths=None, target_lengths=None):
         """
@@ -78,6 +86,17 @@ class CSLRModel(nn.Module):
         Returns:
             torch.Tensor: EnStimCTC loss during training, or decoded gloss sequences during inference.
         """
+        # Move all tensors to the same device as the model
+        skeletal = skeletal.to(self.device)
+        crops = crops.to(self.device)
+        optical_flow = optical_flow.to(self.device)
+        if targets is not None:
+            targets = targets.to(self.device)
+        if input_lengths is not None:
+            input_lengths = input_lengths.to(self.device)
+        if target_lengths is not None:
+            target_lengths = target_lengths.to(self.device)
+
         # Step 1: Spatial Encoding
         spatial_features = self.spatial_encoding(skeletal, crops, optical_flow)  # (B, T, 2, D_total)
 
@@ -101,15 +120,24 @@ class CSLRModel(nn.Module):
 if __name__ == "__main__":
     # Define sample input shapes
     B, T, L = 4, 191, 5  # Batch size, time steps, target sequence length
-    skeletal = torch.randn(B, T, 2, 21, 3)  # Skeletal data for both hands
-    crops = torch.randn(B, T, 2, 3, 112, 112)  # Cropped hand images
-    optical_flow = torch.randn(B, T-1, 2, 2, 112, 112)  # Optical flow
+    skeletal = torch.randn(B, T, 2, 21, 3)
+    crops = torch.randn(B, T, 2, 3, 112, 112)
+    optical_flow = torch.randn(B, T-1, 2, 2, 112, 112)
     targets = torch.randint(1, 10, (B, L))  # Target gloss indices (1 to 9, assuming blank=0)
-    input_lengths = torch.full((B,), T, dtype=torch.long)  # Length of input sequences
-    target_lengths = torch.full((B,), L, dtype=torch.long)  # Length of target sequences
+    input_lengths = torch.full((B,), T, dtype=torch.long)
+    target_lengths = torch.full((B,), L, dtype=torch.long)
 
-    # Initialize the model with vocab_size=10 (9 glosses + 1 blank)
-    model = CSLRModel(vocab_size=10, blank=0)
+    # Initialize model with specified device
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = CSLRModel(vocab_size=10, blank=0, device=device).to(device)
+
+    # Move sample inputs to the same device as the model
+    skeletal = skeletal.to(device)
+    crops = crops.to(device)
+    optical_flow = optical_flow.to(device)
+    targets = targets.to(device)
+    input_lengths = input_lengths.to(device)
+    target_lengths = target_lengths.to(device)
 
     # Training mode
     model.train()

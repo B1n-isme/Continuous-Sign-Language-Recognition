@@ -199,15 +199,60 @@ def visualize_sample(data, show_frames=None, animated=True, pause_time=0.2):
     if animated:
         plt.show()  # Keep the final plot displayed
 
+def check_crop_value_range(crops):
+    """
+    Check the value range of the images in 'crops' to determine if they are normalized.
+
+    Args:
+        crops (list of np.ndarray): List of image arrays.
+
+    Returns:
+        None (Prints the min and max pixel values)
+    """
+    if not isinstance(crops, np.ndarray):
+        print("Error: 'crops' is not a NumPy array.")
+        return
+    
+    pixel_values = []
+    
+    # Collect all pixel values
+    for frame in crops:
+        if len(frame) > 0:  # Ensure it's not an empty frame
+            for crop in frame:
+                pixel_values.append(crop.flatten())  # Flatten to 1D
+    
+    if not pixel_values:
+        print("No valid images found in 'crops'.")
+        return
+    
+    pixel_values = np.concatenate(pixel_values)  # Merge all pixels
+    
+    print(f"Min pixel value: {np.min(pixel_values)}")
+    print(f"Max pixel value: {np.max(pixel_values)}")
+
+    # Check common ranges
+    if np.min(pixel_values) >= 0 and np.max(pixel_values) <= 1:
+        print("Images are normalized (range: [0,1]).")
+    elif np.min(pixel_values) >= -1 and np.max(pixel_values) <= 1:
+        print("Images are normalized (range: [-1,1]).")
+    elif np.min(pixel_values) >= 0 and np.max(pixel_values) <= 255:
+        print("Images have standard 8-bit range (0-255).")
+    else:
+        print("Images have an unusual value range.")
+
+
 
 def main():
-    file_path = "data/raw/Hello-I-Have-Good-Lunch_1dqXkE.npz"
+    file_path = "data/processed/Hello-I-Have-Good-Lunch_1troCk_frame_dropped.npz"
     data = load_npz_file(file_path)
     display_npz_info(data)
-    # Use animated visualization with all valid frames, 0.2 second pause
-    visualize_sample(data, animated=True, pause_time=0.2)
-    # Alternatively for static plots of just a few frames:
-    # visualize_sample(data, show_frames=2, animated=False)
+
+    check_crop_value_range(data["crops"])
+
+
+
+    # # Use animated visualization with all valid frames, 0.2 second pause
+    # visualize_sample(data, animated=True, pause_time=0.2)
 
 
 if __name__ == "__main__":

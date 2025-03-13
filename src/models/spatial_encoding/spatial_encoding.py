@@ -6,6 +6,9 @@ import torch.nn.functional as F
 from src.models.spatial_encoding.cnn import CNNEncoder  # Adjust path as needed
 from src.models.spatial_encoding.gcn import STGCN       # Adjust path as needed
 
+# from cnn import CNNEncoder  # Adjust path as needed
+# from gcn import STGCN       # Adjust path as needed
+
 class SpatialEncoding(nn.Module):
     """
     Spatial encoding module that processes skeletal data, hand crops, and optical flow.
@@ -15,17 +18,19 @@ class SpatialEncoding(nn.Module):
         D_cnn: Dimension of CNN features for crops
         D_flow: Dimension of optical flow features
     """
-    def __init__(self, D_skeletal=64, D_cnn=512, D_flow=512):
+    def __init__(self, D_skeletal=64, D_cnn=512, D_flow=512, device='cpu'):
         super(SpatialEncoding, self).__init__()
+
+        self.device = torch.device(device)
         
         # Skeletal encoding: STGCN for both hands (2D keypoints)
-        self.stgcn = STGCN(in_channels=2, out_dim=D_skeletal, num_joints=21, num_layers=2)
+        self.stgcn = STGCN(in_channels=2, out_dim=D_skeletal, num_joints=21, num_layers=2).to(device)
         
         # CNN for crops (RGB, 3 channels)
-        self.cnn_crops = CNNEncoder(in_channels=3, output_dim=D_cnn, modality="rgb")
+        self.cnn_crops = CNNEncoder(in_channels=3, output_dim=D_cnn, modality="rgb").to(device)
         
         # CNN for optical flow (2 channels)
-        self.cnn_flow = CNNEncoder(in_channels=2, output_dim=D_flow, modality="flow")
+        self.cnn_flow = CNNEncoder(in_channels=2, output_dim=D_flow, modality="flow").to(device)
 
     def forward(self, skeletal, crops, optical_flow):
         """
@@ -39,6 +44,9 @@ class SpatialEncoding(nn.Module):
         Returns:
             Tensor of shape (B, T, 2, D_skeletal + D_cnn + D_flow) containing combined features
         """
+        # Move inputs to the specified device
+        skeletal, crops, optical_flow = skeletal.to(self.device), crops.to(self.device), optical_flow.to(self.device)
+
         B, T, _, _, _ = skeletal.shape
         T_flow = optical_flow.shape[1]  # T-1
 
@@ -74,10 +82,13 @@ class SpatialEncoding(nn.Module):
 
 # Example usage (for testing)
 if __name__ == "__main__":
-    # Sample input: batch_size=4, sequence_length=104
-    skeletal = torch.randn(4, 191, 2, 21, 3)
-    crops = torch.randn(4, 191, 2, 3, 112, 112)
-    optical_flow = torch.randn(4, 190, 2, 2, 112, 112)
-    model = SpatialEncoding(D_skeletal=64, D_cnn=512, D_flow=512)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Sample input: batch_size=4, sequence_length=191
+    skeletal = torch.randn(4, 191, 2, 21, 3).to(device)
+    crops = torch.randn(4, 191, 2, 3, 112, 112).to(device)
+    optical_flow = torch.randn(4, 190, 2, 2, 112, 112).to(device)
+    
+    model = SpatialEncoding(D_skeletal=64, D_cnn=512, D_flow=512).to(device)
     output = model(skeletal, crops, optical_flow)
-    print(f"Output shape: {output.shape}")  # Expected: (4, 104, 2, 1088)
+    print(f"Output shape: {output.shape}")  # Expected: (4, 191, 2, 1088)

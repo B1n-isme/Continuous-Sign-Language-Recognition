@@ -31,7 +31,7 @@ device = "cpu"
 if __name__ == "__main__":
     # Paths to datasets and labels
     train_dataset_path = "data/datasets/train_dataset.pt"
-    val_dataset_path = "data/datasets/val_dataset.pt"
+    val_dataset_path = "data/datasets/test_dataset.pt"
     labels_csv = "data/labels.csv"
 
     # Load datasets

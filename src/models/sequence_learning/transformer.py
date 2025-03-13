@@ -17,20 +17,21 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
 
     def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
+        x = x + self.pe[:x.size(0), :].to(x.device)
         return x
 
 # Improved Transformer Sequence Learning Module
 class TransformerSequenceLearning(nn.Module):
-    def __init__(self, input_dim, model_dim, num_heads, num_layers, vocab_size, dropout=0.1):
+    def __init__(self, input_dim, model_dim, num_heads, num_layers, vocab_size, dropout=0.1, device="cpu"):
         super(TransformerSequenceLearning, self).__init__()
+        self.device = torch.device(device)  # Store the device
         self.model_dim = model_dim
 
         # Input projection to reduced model dimension
-        self.input_proj = nn.Linear(input_dim, model_dim)
+        self.input_proj = nn.Linear(input_dim, model_dim).to(device)
 
         # Positional encoding
-        self.pos_encoder = PositionalEncoding(model_dim)
+        self.pos_encoder = PositionalEncoding(model_dim).to(device)
 
         # Transformer encoder with lightweight settings
         encoder_layer = nn.TransformerEncoderLayer(
@@ -40,13 +41,16 @@ class TransformerSequenceLearning(nn.Module):
             dropout=dropout,
             activation="relu",
             batch_first=True,
-        )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        ).to(device)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers).to(device)
 
         # Classification head for gloss probabilities
-        self.classifier = nn.Linear(model_dim, vocab_size)
+        self.classifier = nn.Linear(model_dim, vocab_size).to(device)
 
     def forward(self, x):
+        # Ensure tensor is on the correct device
+        x = x.to(self.device)
+        
         # Input x: (B, T, 2, D)
         B, T, num_hands, D = x.shape
         # Concatenate hand features: (B, T, 2*D)
@@ -67,8 +71,10 @@ class TransformerSequenceLearning(nn.Module):
 
 # Example Usage
 if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # Sample input: (B, T, 2, D) = (4, 191, 2, 256)
-    x = torch.randn(4, 191, 2, 256)
+    x = torch.randn(4, 191, 2, 256).to(device)
 
     # Initialize model (vocab_size=100 as an example)
     model = TransformerSequenceLearning(
@@ -78,9 +84,10 @@ if __name__ == "__main__":
         num_layers=2,       # Lightweight with 2 layers
         vocab_size=10,     # Adjust based on your gloss vocabulary
         dropout=0.1,
-    )
+        device=device       # Set device
+    ).to(device)
 
     # Forward pass
     output = model(x)
     print(f"Input shape: {x.shape}")  # (4, 191, 2, 256)
-    print(f"Output shape: {output.shape}")  # (4, 191, 100)
+    print(f"Output shape: {output.shape}")  # (4, 191, 10)
