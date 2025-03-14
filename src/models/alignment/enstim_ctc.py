@@ -3,95 +3,106 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class EnStimCTC(nn.Module):
-    """Entropy Stimulated CTC Loss for CSLR with Transformer gloss probabilities."""
-    def __init__(self, vocab_size, hidden_dim, blank=0, lambda_entropy=0.1, device='cpu'):
-        """
-        Args:
-            vocab_size (int): Number of unique glosses (including blank, as output by Transformer).
-            hidden_dim (int): Hidden dimension for the auxiliary RNN.
-            blank (int): Index of the blank token (default: 0).
-            lambda_entropy (float): Weight for entropy regularization (default: 0.1).
-        """
+    """Improved Entropy Stimulated CTC Loss for CSLR with Transformer gloss probabilities."""
+    def __init__(self, vocab_size, context_dim, blank=0, lambda_entropy=0.1, device='cpu'):
         super(EnStimCTC, self).__init__()
         self.device = torch.device(device)
         self.blank = blank
         self.lambda_entropy = lambda_entropy
         self.vocab_size = vocab_size
         
-        # Unidirectional RNN (GRU) to encode history from Transformer output
-        self.rnn = nn.GRU(input_size=vocab_size, hidden_size=hidden_dim, num_layers=1, batch_first=True).to(device)
+        # Causal 1D convolution for context encoding
+        self.context_conv = nn.Conv1d(
+            in_channels=vocab_size,
+            out_channels=context_dim,
+            kernel_size=3,
+            padding=0,  # Causal padding handled manually
+            bias=False
+        ).to(device)
         
-        # Projection layer to refine RNN output to gloss probabilities
-        self.rnn_proj = nn.Linear(hidden_dim, vocab_size).to(device)
+        # Projection layer to map context to gloss probabilities
+        self.context_proj = nn.Linear(context_dim, vocab_size).to(device)
         
-        # Log softmax for final probabilities
+        # Learnable weight for combining logits, initialized to avoid extreme scaling
+        self.combination_weight = nn.Parameter(torch.tensor(0.5, device=device))
+        
+        # Log softmax for probabilities
         self.log_softmax = nn.LogSoftmax(dim=2).to(device)
 
     def forward(self, x, targets, input_lengths, target_lengths):
         """
         Args:
             x (Tensor): Transformer output logits, shape (B, T, vocab_size).
-            targets (Tensor): Target gloss sequences, shape (B, L).
+            targets (Tensor): Concatenated target gloss sequences, shape (sum(L_i),).
             input_lengths (Tensor): Length of each input sequence, shape (B,).
             target_lengths (Tensor): Length of each target sequence, shape (B,).
         
         Returns:
             Tensor: EnStimCTC loss.
         """
-        # Ensure tensors are on the correct device
         x = x.to(self.device)
         targets = targets.to(self.device)
         input_lengths = input_lengths.to(self.device)
         target_lengths = target_lengths.to(self.device)
 
-        # Step 1: Encode history with auxiliary RNN
-        rnn_output, _ = self.rnn(x)  # (B, T, hidden_dim)
+        # Step 1: Encode context with causal convolution
+        x_padded = F.pad(x.transpose(1, 2), (2, 0), mode='constant', value=0).transpose(1, 2)  # (B, T+2, vocab_size)
+        context = self.context_conv(x_padded.transpose(1, 2))[:, :, :x.size(1)]  # (B, context_dim, T)
+        context = context.transpose(1, 2)  # (B, T, context_dim)
         
-        # Step 2: Project RNN output to gloss vocabulary
-        rnn_logits = self.rnn_proj(rnn_output)  # (B, T, vocab_size)
+        # Step 2: Project context to gloss vocabulary
+        context_logits = self.context_proj(context)  # (B, T, vocab_size)
         
-        # Step 3: Combine Transformer logits with RNN context (StimCTC)
-        combined_logits = x + 0.5 * rnn_logits  # Weighted sum of Transformer and RNN logits
+        # Step 3: Combine Transformer and context logits with clamping to prevent explosion
+        combined_logits = x + torch.clamp(self.combination_weight, min=0.0, max=1.0) * context_logits
         log_probs = self.log_softmax(combined_logits)  # (B, T, vocab_size)
         
+        # Debugging: Check for NaN in log_probs
+        if torch.isnan(log_probs).any():
+            print("NaN detected in log_probs!")
+            print(f"Combined logits min/max: {combined_logits.min().item()}/{combined_logits.max().item()}")
+        
         # Step 4: Compute CTC loss
-        log_probs_ctc = log_probs.transpose(0, 1)  # (T, B, vocab_size) for CTC
+        log_probs_ctc = log_probs.transpose(0, 1)  # (T, B, vocab_size)
         ctc_loss = F.ctc_loss(
             log_probs_ctc,
             targets,
             input_lengths,
             target_lengths,
             blank=self.blank,
-            reduction='mean'
+            reduction='mean',
+            zero_infinity=True  # Handle infinities gracefully
         )
         
-        # Step 5: Compute entropy regularization (EnCTC)
-        probs = torch.exp(log_probs)  # (B, T, vocab_size)
-        entropy = -torch.sum(probs * log_probs, dim=2)  # (B, T)
-        entropy_mean = entropy.mean()  # Average over batch and time
+        # Debugging: Check CTC loss
+        if torch.isnan(ctc_loss):
+            print("NaN detected in CTC loss!")
+            print(f"log_probs_ctc min/max: {log_probs_ctc.min().item()}/{log_probs_ctc.max().item()}")
         
-        # Step 6: Total loss
-        loss = ctc_loss + self.lambda_entropy * entropy_mean
+        # Step 5: Compute entropy regularization (encourage peakiness) with numerical stability
+        probs = torch.exp(log_probs.clamp(min=-100, max=0))  # Avoid extreme values
+        entropy = -torch.sum(probs * log_probs, dim=2)  # (B, T)
+        entropy_mean = torch.nan_to_num(entropy.mean(), nan=0.0)  # Replace NaN with 0
+        
+        # Debugging: Check entropy
+        if torch.isnan(entropy_mean):
+            print("NaN detected in entropy_mean!")
+            print(f"Entropy min/max: {entropy.min().item()}/{entropy.max().item()}")
+        
+        # Step 6: Total loss with negative entropy term
+        loss = ctc_loss - self.lambda_entropy * entropy_mean
         return loss
 
     def decode(self, x, input_lengths):
-        """
-        Greedy decoding for inference.
-        
-        Args:
-            x (Tensor): Transformer output logits, shape (B, T, vocab_size).
-            input_lengths (Tensor): Length of each sequence, shape (B,).
-        
-        Returns:
-            list: Predicted gloss sequences.
-        """
         x = x.to(self.device)
         input_lengths = input_lengths.to(self.device)
 
         with torch.no_grad():
-            rnn_output, _ = self.rnn(x)  # (B, T, hidden_dim)
-            rnn_logits = self.rnn_proj(rnn_output)  # (B, T, vocab_size)
-            combined_logits = x + 0.5 * rnn_logits  # Combine with Transformer logits
+            x_padded = F.pad(x.transpose(1, 2), (2, 0), mode='constant', value=0).transpose(1, 2)
+            context = self.context_conv(x_padded.transpose(1, 2))[:, :, :x.size(1)]
+            context = context.transpose(1, 2)
+            context_logits = self.context_proj(context)
+            combined_logits = x + torch.clamp(self.combination_weight, min=0.0, max=1.0) * context_logits
             log_probs = self.log_softmax(combined_logits)
             preds = log_probs.argmax(dim=2)  # (B, T)
             decoded = []
@@ -109,36 +120,14 @@ class EnStimCTC(nn.Module):
 # Example Usage
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Simulated Transformer output: (B, T, vocab_size) = (4, 191, 11) (10 glosses + blank)
-    x = torch.randn(4, 191, 11).to(device)
-    # Target gloss sequences: (B, L) = (4, 5)
-    targets = torch.tensor([
-        [1, 2, 3, 4, 5],
-        [2, 3, 4, 5, 6],
-        [1, 3, 5, 7, 9],
-        [4, 6, 8, 2, 1]
-    ], dtype=torch.long).to(device)
-    
-    # Input lengths: (B,) = (4,)
+    x = torch.randn(4, 191, 11).to(device)  # (B, T, vocab_size)
+    targets = torch.tensor([10, 13, 8, 1, 10, 13, 8, 1, 12, 0, 13, 2, 7, 5, 3, 11], 
+                           dtype=torch.long).to(device)
     input_lengths = torch.tensor([191, 191, 191, 191], dtype=torch.long).to(device)
+    target_lengths = torch.tensor([4, 4, 4, 4], dtype=torch.long).to(device)
     
-    # Target lengths: (B,) = (4,)
-    target_lengths = torch.tensor([5, 5, 5, 5], dtype=torch.long).to(device)
-    
-    # Initialize EnStimCTC with CUDA
-    model = EnStimCTC(
-        vocab_size=11,     # 10 glosses + 1 blank
-        hidden_dim=256,    # RNN hidden size
-        blank=0,           # Blank token index
-        lambda_entropy=0.1, # Entropy regularization weight
-        device=device      # Set device
-    ).to(device)
-
-    # Compute loss
+    model = EnStimCTC(vocab_size=11, context_dim=256, blank=0, lambda_entropy=0.1, device=device)
     loss = model(x, targets, input_lengths, target_lengths)
     print(f"EnStimCTC Loss: {loss.item():.4f}")
-    
-    # Decode predictions
     decoded = model.decode(x, input_lengths)
     print(f"Predicted Gloss Sequences: {decoded}")

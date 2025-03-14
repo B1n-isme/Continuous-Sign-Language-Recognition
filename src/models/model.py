@@ -20,8 +20,8 @@ class CSLRModel(nn.Module):
     - TransformerSequenceLearning: Models long-term dependencies and outputs gloss probabilities.
     - EnStimCTC: Applies Entropy Stimulated CTC loss for training or decodes predictions during inference.
     """
-    def __init__(self, vocab_size, D_skeletal=64, D_cnn=512, D_flow=512, D_temp=256, model_dim=512,
-                 num_heads=8, num_layers=4, hidden_dim_rnn=256, blank=0, lambda_entropy=0.1, dropout=0.1,
+    def __init__(self, vocab_size, D_skeletal=64, D_cnn=512, D_flow=512, D_temp=256, model_dim=128,
+                 num_heads=4, num_layers=2, context_dim=128, blank=0, lambda_entropy=0.1, dropout=0.1,
                  device='cpu'):
         """
         Initialize the CSLR model with its submodules.
@@ -35,41 +35,41 @@ class CSLRModel(nn.Module):
             model_dim (int): Dimension of the Transformer model.
             num_heads (int): Number of attention heads in the Transformer.
             num_layers (int): Number of Transformer encoder layers.
-            hidden_dim_rnn (int): Hidden dimension for the RNN in EnStimCTC.
+            context_dim (int): Dimension for EnStimCTC's causal convolution context.
             blank (int): Index of the blank token in CTC (default: 0).
             lambda_entropy (float): Weight for the entropy term in EnStimCTC loss.
             dropout (float): Dropout rate for the Transformer.
+            device (str): Device to run the model on ('cpu' or 'cuda').
         """
         super(CSLRModel, self).__init__()
-
-        # Total spatial feature dimension
+        self.device = torch.device(device)
         D_total = D_skeletal + D_cnn + D_flow
 
-        self.device = torch.device(device)
-
         # Spatial Encoding module
-        self.spatial_encoding = SpatialEncoding(D_skeletal, D_cnn, D_flow).to(device)
+        self.spatial_encoding = SpatialEncoding(D_skeletal, D_cnn, D_flow).to(self.device)
 
-        # Temporal Encoding module
-        self.temporal_encoding = TemporalEncoding(in_channels=D_total, out_channels=D_temp).to(device)
+        # Temporal Encoding module (optimized with depthwise separable convolutions)
+        self.temporal_encoding = TemporalEncoding(in_channels=D_total, out_channels=D_temp).to(self.device)
 
-        # Transformer Sequence Learning module (improved to output gloss probabilities)
+        # Lightweight Transformer Sequence Learning module
         self.sequence_learning = TransformerSequenceLearning(
             input_dim=2 * D_temp,  # Concatenated features from both hands
             model_dim=model_dim,
             num_heads=num_heads,
             num_layers=num_layers,
-            vocab_size=vocab_size,  # Includes blank token
-            dropout=dropout
-        ).to(device)
+            vocab_size=vocab_size,
+            dropout=dropout,
+            device=device
+        ).to(self.device)
 
-        # EnStimCTC module for alignment and loss computation
+        # EnStimCTC module with causal convolution
         self.enstim_ctc = EnStimCTC(
-            vocab_size=vocab_size,  # Includes blank token
-            hidden_dim=hidden_dim_rnn,
+            vocab_size=vocab_size,
+            context_dim=context_dim,
             blank=blank,
-            lambda_entropy=lambda_entropy
-        ).to(device)
+            lambda_entropy=lambda_entropy,
+            device=device
+        ).to(self.device)
 
     def forward(self, skeletal, crops, optical_flow, targets=None, input_lengths=None, target_lengths=None):
         """
@@ -78,15 +78,16 @@ class CSLRModel(nn.Module):
         Args:
             skeletal (torch.Tensor): Skeletal data of shape (B, T, 2, 21, 3).
             crops (torch.Tensor): Cropped hand images of shape (B, T, 2, 3, 112, 112).
-            optical_flow (torch.Tensor): Optical flow of shape (B, T-1, 2, 2, 112, 112).
-            targets (torch.Tensor, optional): Target gloss sequences of shape (B, L).
-            input_lengths (torch.Tensor, optional): Lengths of input sequences (B,).
-            target_lengths (torch.Tensor, optional): Lengths of target sequences (B,).
+            optical_flow (torch.Tensor): Optical flow of shape (B, T, 2, 2, 112, 112).
+            targets (torch.Tensor, optional): Concatenated target gloss sequences of shape (sum(L_i),).
+            input_lengths (torch.Tensor, optional): Lengths of input sequences, shape (B,).
+            target_lengths (torch.Tensor, optional): Lengths of target sequences, shape (B,).
 
         Returns:
-            torch.Tensor: EnStimCTC loss during training, or decoded gloss sequences during inference.
+            torch.Tensor: EnStimCTC loss if targets are provided, or list of decoded gloss sequences if not.
         """
-        # Move all tensors to the same device as the model
+
+        # Ensure all inputs are on the same device as the model
         skeletal = skeletal.to(self.device)
         crops = crops.to(self.device)
         optical_flow = optical_flow.to(self.device)
@@ -96,7 +97,7 @@ class CSLRModel(nn.Module):
             input_lengths = input_lengths.to(self.device)
         if target_lengths is not None:
             target_lengths = target_lengths.to(self.device)
-
+            
         # Step 1: Spatial Encoding
         spatial_features = self.spatial_encoding(skeletal, crops, optical_flow)  # (B, T, 2, D_total)
 
@@ -106,10 +107,8 @@ class CSLRModel(nn.Module):
         # Step 3: Sequence Learning with Transformer
         sequence_output = self.sequence_learning(temporal_features)  # (B, T, vocab_size)
 
-        # Step 4: EnStimCTC for alignment
-        if self.training:
-            if targets is None or input_lengths is None or target_lengths is None:
-                raise ValueError("Targets, input_lengths, and target_lengths must be provided during training.")
+        # Step 4: EnStimCTC for alignment or decoding
+        if targets is not None and input_lengths is not None and target_lengths is not None:
             loss = self.enstim_ctc(sequence_output, targets, input_lengths, target_lengths)
             return loss
         else:
@@ -118,34 +117,35 @@ class CSLRModel(nn.Module):
 
 # Example Usage
 if __name__ == "__main__":
-    # Define sample input shapes
-    B, T, L = 4, 191, 5  # Batch size, time steps, target sequence length
-    skeletal = torch.randn(B, T, 2, 21, 3)
-    crops = torch.randn(B, T, 2, 3, 112, 112)
-    optical_flow = torch.randn(B, T-1, 2, 2, 112, 112)
-    targets = torch.randint(1, 10, (B, L))  # Target gloss indices (1 to 9, assuming blank=0)
-    input_lengths = torch.full((B,), T, dtype=torch.long)
-    target_lengths = torch.full((B,), L, dtype=torch.long)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = CSLRModel(vocab_size=11, device=device)
 
-    # Initialize model with specified device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = CSLRModel(vocab_size=10, blank=0, device=device).to(device)
+    # Define sample inputs
+    B, T = 4, 191  # Batch size, time steps
+    skeletal = torch.randn(B, T, 2, 21, 3).to(device)
+    crops = torch.randn(B, T, 2, 3, 112, 112).to(device)
+    optical_flow = torch.randn(B, T, 2, 2, 112, 112).to(device)
+    # Concatenated targets matching DataLoader output
+    targets = torch.tensor([10, 13, 8, 1, 10, 13, 8, 1, 12, 0, 13, 2, 7, 5, 3, 11], 
+                           dtype=torch.long).to(device)  # (sum(L_i),) = (16,)
+    input_lengths = torch.tensor([191, 191, 191, 191], dtype=torch.long).to(device)  # (B,) = (4,)
+    target_lengths = torch.tensor([4, 4, 4, 4], dtype=torch.long).to(device)  # (B,) = (4,)
 
-    # Move sample inputs to the same device as the model
-    skeletal = skeletal.to(device)
-    crops = crops.to(device)
-    optical_flow = optical_flow.to(device)
-    targets = targets.to(device)
-    input_lengths = input_lengths.to(device)
-    target_lengths = target_lengths.to(device)
+    # # Training mode (compute loss)
+    # model.train()
+    # loss = model(skeletal, crops, optical_flow, targets, input_lengths, target_lengths)
+    # print(f"Training Loss: {loss.item():.4f}")
 
-    # Training mode
-    model.train()
-    loss = model(skeletal, crops, optical_flow, targets, input_lengths, target_lengths)
-    print(f"Training Loss: {loss.item():.4f}")
+    # # Inference mode (decode sequences)
+    # model.eval()
+    # with torch.no_grad():
+    #     decoded = model(skeletal, crops, optical_flow, input_lengths=input_lengths)
+    # print(f"Decoded Sequences: {decoded}")
 
-    # Inference mode
-    model.eval()
-    with torch.no_grad():
-        decoded = model(skeletal, crops, optical_flow, input_lengths=input_lengths)
-    print(f"Decoded Sequences: {decoded}")
+    # print all shape of input
+    print(f"Skeletal shape: {skeletal.shape}")  # (4, 191, 2, 21, 3)
+    print(f"Crops shape: {crops.shape}")  # (4, 191, 2, 3, 112, 112)
+    print(f"Optical Flow shape: {optical_flow.shape}")  # (4, 191, 2, 2, 112, 112)
+    print(f"Targets shape: {targets.shape}")  # (16,)
+    print(f"Input Lengths shape: {input_lengths.shape}")  # (4,)
+    print(f"Target Lengths shape: {target_lengths.shape}")  # (4,)

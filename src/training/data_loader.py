@@ -113,10 +113,17 @@ if __name__ == "__main__":
 
     # Test the train_loader
     for batch in loaded_train_loader:
-        print(batch.keys())
-        print(f"Skeletal: {batch['skeletal'].shape}")
-        print(f"Crops: {batch['crops'].shape}")
-        print(f"Optical Flow: {batch['optical_flow'].shape}")
-        print(f"Labels: {batch['labels'].shape}")
-        print(f"Sample labels: {batch['labels'][0]}")
+        # print("=== Batch Contents ===")
+        # print("Targets (concatenated label indices):")
+        # print(batch['targets'])  # Expected: tensor([1, 2, 3, 4, 3, 2])
+        # print("Target Lengths (length of each label sequence):")
+        # print(batch['target_lengths'])  # Expected: tensor([2, 1, 3])
+        # print("Input Lengths (original sequence lengths):")
+        # print(batch['input_lengths'])  # Random T_i values
+        print("Skeletal Shape:", batch["skeletal"].shape)
+        print("Crops Shape:", batch["crops"].shape)
+        print("Optical Flow Shape:", batch["optical_flow"].shape)
+        print("Targets Shape:", batch["targets"].shape)
+        print("Input Lengths Shape:", batch["input_lengths"].shape)
+        print("Target Lengths Shape:", batch["target_lengths"].shape)
         break
