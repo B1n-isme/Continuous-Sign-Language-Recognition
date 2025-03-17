@@ -11,7 +11,7 @@ from datetime import datetime
 import sys
 import tempfile
 import shutil
-from optical_flow import compute_optical_flow
+from input_modalities.optical_flow_raft import compute_optical_flow
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))

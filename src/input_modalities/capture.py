@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QImage, QPixmap
 import mediapipe as mp
-from optical_flow import compute_optical_flow
+from input_modalities.optical_flow_raft import compute_optical_flow
 import os
 import time
 

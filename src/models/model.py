@@ -2,6 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from spatial_encoding.spatial_encoding import SpatialEncoding
+from temporal_encoding.tempconv import TemporalEncoding
+from sequence_learning.transformer import TransformerSequenceLearning
+from alignment.enstim_ctc import EnStimCTC
+
 class CSLRModel(nn.Module):
     def __init__(self, spatial_params, temporal_params, transformer_params, enstim_params, device='cpu'):
         super(CSLRModel, self).__init__()
