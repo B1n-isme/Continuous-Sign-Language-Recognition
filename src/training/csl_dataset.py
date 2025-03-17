@@ -38,21 +38,21 @@ class CSLDataset(Dataset):
         zero_flow = np.zeros((1, 2, 112, 112, 2), dtype=optical_flow.dtype)
         optical_flow_padded = np.concatenate([zero_flow, optical_flow], axis=0)  # (T, 2, 112, 112, 2)
         
-        # Get labels and convert to indices
-        labels = self.label_dict[file_path]
-        label_indices = [self.vocab[word] for word in labels]
+        # Get targets and convert to indices
+        targets = self.label_dict[file_path]
+        label_indices = [self.vocab[word] for word in targets]
         
         # Convert to tensors and move to device
         skeletal_tensor = torch.tensor(skeletal_data, dtype=torch.float, device=self.device)  # (T, 2, 21, 3)
         crops_tensor = torch.tensor(crops, dtype=torch.float, device=self.device).permute(0, 1, 4, 2, 3)  # (T, 2, 3, 112, 112)
         flow_tensor = torch.tensor(optical_flow_padded, dtype=torch.float, device=self.device).permute(0, 1, 4, 2, 3)  # (T, 2, 2, 112, 112)
-        labels_tensor = torch.tensor(label_indices, dtype=torch.long, device=self.device)  # (L,)
+        targets_tensor = torch.tensor(label_indices, dtype=torch.long, device=self.device)  # (L,)
         
         return {
             'skeletal': skeletal_tensor,
             'crops': crops_tensor,
             'optical_flow': flow_tensor,
-            'labels': labels_tensor,
+            'targets': targets_tensor,
             'input_length': T  # Keep as Python int for now; converted to tensor in collate_fn
         }
 
@@ -74,7 +74,7 @@ def collate_fn(batch, device='cpu'):
     skeletal = [item['skeletal'] for item in batch]          # List of (T_i, 2, 21, 3)
     crops = [item['crops'] for item in batch]                # List of (T_i, 2, 3, 112, 112)
     optical_flow = [item['optical_flow'] for item in batch]  # List of (T_i, 2, 2, 112, 112)
-    labels = [item['labels'] for item in batch]              # List of (L_i,)
+    targets = [item['targets'] for item in batch]              # List of (L_i,)
     input_lengths = [item['input_length'] for item in batch] # List of T_i (Python ints)
 
     # Determine maximum sequence length
@@ -99,8 +99,8 @@ def collate_fn(batch, device='cpu'):
     ]).to(device)  # (B, max_T, 2, 2, 112, 112)
 
     # Prepare targets for CTC
-    target_lengths = torch.tensor([len(l) for l in labels], dtype=torch.long, device=device)  # (B,)
-    targets = torch.cat(labels, dim=0).to(device)  # (sum(L_i),)
+    target_lengths = torch.tensor([len(l) for l in targets], dtype=torch.long, device=device)  # (B,)
+    targets = torch.cat(targets, dim=0).to(device)  # (sum(L_i),)
 
     # Convert input_lengths to tensor
     input_lengths = torch.tensor(input_lengths, dtype=torch.long, device=device)  # (B,)
@@ -109,7 +109,7 @@ def collate_fn(batch, device='cpu'):
         'skeletal': skeletal_padded,
         'crops': crops_padded,
         'optical_flow': flow_padded,
-        'labels': targets,  # Renamed to match training script expectation
+        'targets': targets,  # Renamed to match training script expectation
         'target_lengths': target_lengths,
         'input_lengths': input_lengths
     }
@@ -141,7 +141,7 @@ if __name__ == "__main__":
         print(f"Skeletal device: {batch['skeletal'].device}")
         print(f"Crops device: {batch['crops'].device}")
         print(f"Optical Flow device: {batch['optical_flow'].device}")
-        print(f"Targets device: {batch['labels'].device}")
+        print(f"Targets device: {batch['targets'].device}")
         print(f"Input lengths device: {batch['input_lengths'].device}")
         print(f"Target lengths device: {batch['target_lengths'].device}")
         break

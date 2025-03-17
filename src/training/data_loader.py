@@ -20,9 +20,9 @@ if __name__ == "__main__":
 
     # Load labels and build vocabulary
     label_dict = load_labels(labels_csv)
-    # print(label_dict)
+    print(label_dict)
     vocab = build_vocab(label_dict)
-    # print(vocab)
+    print(vocab)
     file_dir = list(label_dict.keys())
 
     # Get and split unique sequences
