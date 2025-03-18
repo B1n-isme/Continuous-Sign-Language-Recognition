@@ -47,18 +47,20 @@ class CustomTransformerEncoderLayer(nn.Module):
         src = src + self.dropout2(ff_output)
         return src
 
-# Updated Transformer Sequence Learning with Performer and Relative Positional Encoding
+# Updated Transformer Sequence Learning with Performer and Relative Positional Encoding,
+# now with explicit device handling.
 class TransformerSequenceLearning(nn.Module):
     def __init__(self, input_dim, model_dim=256, num_heads=4, num_layers=2,
-                 vocab_size=None, dropout=0.1, nb_features=256):
+                 vocab_size=None, dropout=0.1, nb_features=256, device='cpu'):
         super(TransformerSequenceLearning, self).__init__()
+        self.device = torch.device(device)
         self.model_dim = model_dim
 
         # Input projection to model_dim (256)
-        self.input_proj = nn.Linear(input_dim, model_dim)
+        self.input_proj = nn.Linear(input_dim, model_dim).to(self.device)
         
         # Use learnable relative positional encoding
-        self.pos_encoder = RelativePositionalEncoding(model_dim)
+        self.pos_encoder = RelativePositionalEncoding(model_dim).to(self.device)
         
         # Transformer encoder with Performer-based layers
         encoder_layers = [CustomTransformerEncoderLayer(
@@ -67,18 +69,19 @@ class TransformerSequenceLearning(nn.Module):
             dim_feedforward=model_dim * 4,  # Standard FFN size (256*4 = 1024)
             dropout=dropout,
             nb_features=nb_features
-        ) for _ in range(num_layers)]
-        self.transformer_encoder = nn.ModuleList(encoder_layers)
+        ).to(self.device) for _ in range(num_layers)]
+        self.transformer_encoder = nn.ModuleList(encoder_layers).to(self.device)
         
         # Main classification head
-        self.classifier = nn.Linear(model_dim, vocab_size)
+        self.classifier = nn.Linear(model_dim, vocab_size).to(self.device)
         
         # Auxiliary CTC head (remains unchanged)
-        self.aux_conv = nn.Conv1d(model_dim, 64, kernel_size=3, padding=1)
-        self.aux_linear = nn.Linear(64, vocab_size + 1)  # +1 for CTC blank token
+        self.aux_conv = nn.Conv1d(model_dim, 64, kernel_size=3, padding=1).to(self.device)
+        self.aux_linear = nn.Linear(64, vocab_size).to(self.device)
 
     def forward(self, x):
         # x: (B, T, num_hands, D), e.g., (B, T, 2, 256)
+        x = x.to(self.device)
         B, T, num_hands, D = x.shape
         # Merge hands into feature dimension: (B, T, num_hands * D)
         x = x.view(B, T, -1)
@@ -110,7 +113,8 @@ if __name__ == "__main__":
         num_layers=2,
         vocab_size=vocab_size,
         dropout=0.1,
-        nb_features=256
+        nb_features=256,
+        device=device
     ).to(device)
     x = torch.randn(4, 191, 2, 256).to(device)  # Example input from TemporalEncoding
     gloss_probs, aux_output = model(x)

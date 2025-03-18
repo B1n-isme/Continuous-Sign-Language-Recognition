@@ -62,42 +62,42 @@ class MultiScaleResidualBlock(nn.Module):
         fused = self.fuse_conv(x_cat)
         return fused
 
-# Modified Temporal Encoding Module using Multi-Scale Residual Blocks
+# Modified Temporal Encoding Module using Multi-Scale Residual Blocks with device support
 class TemporalEncoding(nn.Module):
     def __init__(self, in_channels, out_channels=256,
                  kernel_sizes=[3, 5, 7], dilations=[1, 2, 4],
-                 vocab_size=None):
+                 vocab_size=None, device='cpu'):
         super(TemporalEncoding, self).__init__()
+        self.device = torch.device(device)
         
         # Build a stack of multi-scale residual blocks
         layers = []
         for i, dilation in enumerate(dilations):
-            # For the first block, use in_channels; for subsequent, use out_channels
-            layers.append(
-                MultiScaleResidualBlock(
-                    in_channels if i == 0 else out_channels,
-                    out_channels,
-                    kernel_sizes,
-                    dilation
-                )
+            block = MultiScaleResidualBlock(
+                in_channels if i == 0 else out_channels,
+                out_channels,
+                kernel_sizes,
+                dilation
             )
+            layers.append(block.to(self.device))
         self.layers = nn.ModuleList(layers)
         
         # Auxiliary CTC head (optional)
         if vocab_size is not None:
-            self.aux_conv = nn.Conv1d(out_channels, 64, kernel_size=3, padding=1)
-            self.aux_linear = nn.Linear(64, vocab_size)  # (vocab_size includes blank token if needed)
+            self.aux_conv = nn.Conv1d(out_channels, 64, kernel_size=3, padding=1).to(self.device)
+            self.aux_linear = nn.Linear(64, vocab_size).to(self.device)
         else:
             self.aux_conv = None
 
     def forward(self, x):
         # x: (B, T, num_hands, D_spatial), e.g., (B, T, 2, 128)
+        x = x.to(self.device)
         B, T, num_hands, D_spatial = x.shape
         # Merge num_hands with batch for 1D processing: (B*num_hands, D_spatial, T)
         x = x.view(B * num_hands, D_spatial, T)
 
         # Process through multi-scale residual blocks
-        # Use first layer for auxiliary CTC head if available
+        # Use first block for auxiliary CTC head if available
         x = self.layers[0](x)  # (B*num_hands, out_channels, T)
         if self.aux_conv is not None:
             # Reshape to (B, num_hands, out_channels, T) and average over hands
@@ -108,7 +108,7 @@ class TemporalEncoding(nn.Module):
         else:
             aux_output = None
 
-        # Remaining multi-scale blocks
+        # Process remaining multi-scale blocks
         for layer in self.layers[1:]:
             x = layer(x)  # (B*num_hands, out_channels, T)
 
@@ -125,7 +125,8 @@ if __name__ == "__main__":
         out_channels=256,
         kernel_sizes=[3, 5, 7],
         dilations=[1, 2, 4],
-        vocab_size=vocab_size
+        vocab_size=vocab_size,
+        device=device
     ).to(device)
     
     x = torch.randn(4, 114, 2, 128).to(device)  # Example input: (B, T, 2, 128)

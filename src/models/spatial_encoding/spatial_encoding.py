@@ -165,14 +165,16 @@ class SpatialEncoding(nn.Module):
         self.graph_layer2 = GraphConvLayer(32, 32, A, device)  # 32 -> 32
         
         # CNNs for RGB and Optical Flow (using MobileNet V3 Small)
-        self.cnn_rgb = models.mobilenet_v3_small(weights=None)
-        state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
-        self.cnn_rgb.load_state_dict(state_dict)
+        self.cnn_rgb = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
+        # self.cnn_rgb = models.mobilenet_v3_small(weights=None)
+        # state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
+        # self.cnn_rgb.load_state_dict(state_dict)
         self.cnn_rgb.eval()
 
-        self.cnn_flow = models.mobilenet_v3_small(weights=None)
-        state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
-        self.cnn_flow.load_state_dict(state_dict)
+        self.cnn_flow = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
+        # self.cnn_flow = models.mobilenet_v3_small(weights=None)
+        # state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
+        # self.cnn_flow.load_state_dict(state_dict)
         self.cnn_flow.eval()
 
 
