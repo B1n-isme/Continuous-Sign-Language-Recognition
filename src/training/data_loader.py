@@ -14,19 +14,19 @@ from src.training.split_data import get_unique_sequences, split_sequences, get_f
 from src.utils.label_utils import load_labels, build_vocab
 
 if __name__ == "__main__":
-    # Paths
-    processed_dir = "data/processed"
-    labels_csv = "data/labels.csv"
-    datasets_dir = "data/datasets"
+    # # Paths
+    # processed_dir = "data/processed"
+    # labels_csv = "data/labels.csv"
+    # datasets_dir = "data/datasets"
 
-    # Load labels and build vocabulary
-    label_dict = load_labels(labels_csv)
-    # print(label_dict)
-    vocab = build_vocab(label_dict)
-    with open('data/label-idx-mapping.json', 'w') as f:
-        json.dump(vocab, f, indent=4)
+    # # Load labels and build vocabulary
+    # label_dict = load_labels(labels_csv)
+    # # print(label_dict)
+    # vocab = build_vocab(label_dict)
+    # # with open('data/label-idx-mapping.json', 'w') as f:
+    # #     json.dump(vocab, f, indent=4)
 
-    print(vocab)
+    # # print(vocab)
     # file_dir = list(label_dict.keys())
 
     # # Get and split unique sequences
@@ -48,13 +48,13 @@ if __name__ == "__main__":
     # val_dataset = CSLDataset(val_files, label_dict, vocab)
     # test_dataset = CSLDataset(test_files, label_dict, vocab)
 
-    # # for i in range(len(train_files)):
-    # #     print(train_dataset[i]["labels"])
+    # for i in range(len(train_files)):
+    #     print(train_dataset[i]["labels"])
 
     # # Save datasets and metadata
     # print("Saving datasets to", datasets_dir)
 
-    # # Save datasets
+    # Save datasets
     # torch.save(train_dataset, os.path.join(datasets_dir, "train_dataset.pt"))
     # torch.save(val_dataset, os.path.join(datasets_dir, "val_dataset.pt"))
     # torch.save(test_dataset, os.path.join(datasets_dir, "test_dataset.pt"))
@@ -69,8 +69,9 @@ if __name__ == "__main__":
     # }
     # torch.save(metadata, os.path.join(datasets_dir, "metadata.pt"))
 
-    # # Create DataLoaders
-    # batch_size = 4  # Adjust based on your GPU memory
+    # Create DataLoaders
+    batch_size = 4  # Adjust based on your GPU memory
+    test_dataset = torch.load("data/datasets/test_dataset.pt", weights_only=False)
     # train_loader = DataLoader(
     #     train_dataset,
     #     batch_size=batch_size,
@@ -87,14 +88,31 @@ if __name__ == "__main__":
     #     num_workers=2,
     #     drop_last=True,
     # )
-    # test_loader = DataLoader(
-    #     test_dataset,
-    #     batch_size=batch_size,
-    #     shuffle=False,
-    #     collate_fn=collate_fn,
-    #     num_workers=2,
-    #     drop_last=True,
-    # )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=2,
+        drop_last=True,
+    )
+
+    # Test the train_loader
+    for batch in test_loader:
+        print("=== Batch Contents ===")
+        print("Targets (concatenated label indices):")
+        print(batch['targets'])  # Expected: tensor([1, 2, 3, 4, 3, 2])
+        print("Target Lengths (length of each label sequence):")
+        print(batch['target_lengths'])  # Expected: tensor([2, 1, 3])
+        print("Input Lengths (original sequence lengths):")
+        print(batch['input_lengths'])  # Random T_i values
+        print("Skeletal Shape:", batch["skeletal"].shape)
+        print("Crops Shape:", batch["crops"].shape)
+        print("Optical Flow Shape:", batch["optical_flow"].shape)
+        print("Targets Shape:", batch["targets"].shape)
+        print("Input Lengths Shape:", batch["input_lengths"].shape)
+        print("Target Lengths Shape:", batch["target_lengths"].shape)
+        break
 
     # # Test loading saved datasets
     # print("Testing loading datasets...")

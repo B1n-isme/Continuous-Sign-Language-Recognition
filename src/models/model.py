@@ -6,6 +6,10 @@ from src.models.spatial_encoding.spatial_encoding import SpatialEncoding
 from src.models.temporal_encoding.tempconv import TemporalEncoding
 from src.models.sequence_learning.transformer import TransformerSequenceLearning
 from src.models.alignment.enstim_ctc import EnStimCTC
+# from spatial_encoding.spatial_encoding import SpatialEncoding
+# from temporal_encoding.tempconv import TemporalEncoding
+# from sequence_learning.transformer import TransformerSequenceLearning
+# from alignment.enstim_ctc import EnStimCTC
 
 class CSLRModel(nn.Module):
     def __init__(self, spatial_params, temporal_params, transformer_params, enstim_params, device='cpu'):
@@ -93,8 +97,8 @@ if __name__ == "__main__":
     model = CSLRModel(spatial_params, temporal_params, transformer_params, enstim_params, device=device).to(device)
     
     # Create dummy input data.
-    B = 4       # Batch size.
-    T = 191     # Sequence length (number of frames).
+    B = 1       # Batch size.
+    T = 156     # Sequence length (number of frames).
     num_hands = 2
     skeletal = torch.randn(B, T, num_hands, 21, 3).to(device)
     crops = torch.randn(B, T, num_hands, 3, 112, 112).to(device)

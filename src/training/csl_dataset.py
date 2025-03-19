@@ -22,6 +22,7 @@ class CSLDataset(Dataset):
         return len(self.file_list)
     
     def __getitem__(self, idx):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Get device inside method
         file_path = self.file_list[idx]
         data = np.load(file_path)
         
@@ -43,17 +44,17 @@ class CSLDataset(Dataset):
         label_indices = [self.vocab[word] for word in targets]
         
         # Convert to tensors and move to device
-        skeletal_tensor = torch.tensor(skeletal_data, dtype=torch.float, device=self.device)  # (T, 2, 21, 3)
-        crops_tensor = torch.tensor(crops, dtype=torch.float, device=self.device).permute(0, 1, 4, 2, 3)  # (T, 2, 3, 112, 112)
-        flow_tensor = torch.tensor(optical_flow_padded, dtype=torch.float, device=self.device).permute(0, 1, 4, 2, 3)  # (T, 2, 2, 112, 112)
-        targets_tensor = torch.tensor(label_indices, dtype=torch.long, device=self.device)  # (L,)
+        skeletal_tensor = torch.tensor(skeletal_data, dtype=torch.float).to(device)  # (T, 2, 21, 3)
+        crops_tensor = torch.tensor(crops, dtype=torch.float).permute(0, 1, 4, 2, 3).to(device)  # (T, 2, 3, 112, 112)
+        flow_tensor = torch.tensor(optical_flow_padded, dtype=torch.float).permute(0, 1, 4, 2, 3).to(device)  # (T, 2, 2, 112, 112)
+        targets_tensor = torch.tensor(label_indices, dtype=torch.long).to(device)  # (L,)
         
         return {
             'skeletal': skeletal_tensor,
             'crops': crops_tensor,
             'optical_flow': flow_tensor,
             'targets': targets_tensor,
-            'input_length': T  # Keep as Python int for now; converted to tensor in collate_fn
+            'input_length': T 
         }
 
 def collate_fn(batch, device='cpu'):
@@ -109,7 +110,7 @@ def collate_fn(batch, device='cpu'):
         'skeletal': skeletal_padded,
         'crops': crops_padded,
         'optical_flow': flow_padded,
-        'targets': targets,  # Renamed to match training script expectation
+        'targets': targets,
         'target_lengths': target_lengths,
         'input_lengths': input_lengths
     }

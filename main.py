@@ -9,11 +9,9 @@ from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QImage, QPixmap
 import mediapipe as mp
 
-from src.utils.helpers import (
-    get_bounding_box,
-    resize_preserve_aspect_ratio
-)
-from src.models.model import CSLRModel  # Adjust this import based on your project structure
+from src.utils.helpers import get_bounding_box, resize_preserve_aspect_ratio
+from src.models.model import CSLRModel
+from src.input_modalities.optical_farneback import compute_optical_flow
 
 class CSLRWindow(QMainWindow):
     def __init__(self):
@@ -23,8 +21,8 @@ class CSLRWindow(QMainWindow):
 
         # Device and model setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.checkpoint_path = "checkpoints/best_model.pt"  # Adjust path
-        self.vocab = self.load_vocab("data/label-idx-mapping.json")  # Use JSON file
+        self.checkpoint_path = "checkpoints/best_model.pt"
+        self.vocab = self.load_vocab("data/label-idx-mapping.json")
         self.vocab_size = len(self.vocab)
         self.idx_to_gloss = {idx: gloss for gloss, idx in self.vocab.items()}
         self.model = self.load_model()
@@ -33,22 +31,32 @@ class CSLRWindow(QMainWindow):
         self.mp_hands = mp.solutions.hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
         self.mp_drawing = mp.solutions.drawing_utils
 
-        # Video capture
-        self.cap = cv2.VideoCapture(0)
-        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # Video capture initialization
+        self.cap = None
+        self.initialize_camera()
 
-        # Buffer for sequence data
-        self.sequence_length = 30  # Frames per sequence
+        # Recording state variables
+        self.is_recording = False
+        self.no_hands_counter = 0
+        self.no_hands_threshold = 10
+        self.min_sequence_length = 10
+        self.max_sequence_length = 100
+
+        # Constants for pre-allocation
+        self.MAX_HANDS = 2
+        self.NUM_LANDMARKS = 21
+        self.NUM_COORDS = 3
+        self.CROP_SIZE = (112, 112)
+
+        # Dynamic buffers
         self.skeletal_buffer = []
         self.crops_buffer = []
         self.optical_flow_buffer = []
-        self.prev_gray = None
 
         # GUI components
         self.video_label = QLabel(self)
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.prediction_label = QLabel("Prediction: ", self)
+        self.prediction_label = QLabel("Prediction: Waiting for hands...", self)
         self.start_button = QPushButton("Start", self)
         self.stop_button = QPushButton("Stop", self)
 
@@ -70,19 +78,37 @@ class CSLRWindow(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
 
+    def initialize_camera(self):
+        camera_indices = [0, 1, 2]
+        for index in camera_indices:
+            self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
+            if self.cap.isOpened():
+                break
+            self.cap.release()
+            self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+            if self.cap.isOpened():
+                break
+            self.cap.release()
+
+        if not self.cap or not self.cap.isOpened():
+            self.prediction_label.setText("Error: Could not open camera")
+            self.start_button.setEnabled(False)
+            return
+
+        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"Camera opened at index {index} with resolution {self.frame_width}x{self.frame_height}")
+
     def load_vocab(self, json_path):
-        """Load vocabulary from a JSON file."""
         try:
             with open(json_path, 'r') as f:
                 vocab = json.load(f)
-            print("Loaded vocabulary:", vocab)  # Debug print
             return vocab
         except Exception as e:
             print(f"Error loading vocab from JSON: {e}")
             raise
 
     def load_model(self):
-        """Load the trained CSLRModel from checkpoint."""
         spatial_params = {"D_spatial": 128}
         temporal_params = {
             "in_channels": 128,
@@ -112,86 +138,106 @@ class CSLRWindow(QMainWindow):
         return model
 
     def start_capture(self):
-        """Start the video capture and processing."""
-        self.timer.start(30)  # ~33ms interval for ~30 FPS
+        if not self.cap or not self.cap.isOpened():
+            self.prediction_label.setText("Error: Camera not available")
+            return
+        self.timer.start(30)
+        self.prediction_label.setText("Prediction: Waiting for hands...")
 
     def stop_capture(self):
-        """Stop the video capture and clear buffers."""
         self.timer.stop()
+        self.is_recording = False
+        self.no_hands_counter = 0
         self.skeletal_buffer.clear()
         self.crops_buffer.clear()
         self.optical_flow_buffer.clear()
-        self.prev_gray = None
-        self.prediction_label.setText("Prediction: ")
+        self.prediction_label.setText("Prediction: Stopped")
 
     def update_frame(self):
-        """Capture and process each frame."""
-        ret, frame = self.cap.read()
-        if not ret:
+        if not self.cap or not self.cap.isOpened():
+            self.prediction_label.setText("Error: Camera not available")
+            self.timer.stop()
             return
 
-        # Convert to RGB for MediaPipe
+        ret, frame = self.cap.read()
+        if not ret:
+            self.prediction_label.setText("Error: Failed to capture frame")
+            return
+
+        frame = cv2.flip(frame, 1)
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.mp_hands.process(frame_rgb)
+        has_hands = bool(results.multi_hand_landmarks)
 
-        # Process hands
-        skeletal_data = []
-        crops_data = []
-        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Process frame data
+        skeletal_data, crops_data = self.process_frame_data(frame, results)
 
+        # Dynamic recording logic
+        if has_hands:
+            if not self.is_recording:
+                self.start_recording()
+            self.append_to_buffers(skeletal_data, crops_data)
+            self.no_hands_counter = 0
+        else:
+            if self.is_recording:
+                self.no_hands_counter += 1
+                if self.no_hands_counter >= self.no_hands_threshold:
+                    self.stop_recording_and_predict()
+
+        # Display the frame with annotations
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
-                # Skeletal data: 21 landmarks with (x, y, z)
-                landmarks = [[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark]
-                skeletal_data.append(landmarks)
-
-                # Hand crop using your utilities
-                x_min, y_min, x_max, y_max = get_bounding_box(hand_landmarks, self.frame_width, self.frame_height)
-                crop = frame[y_min:y_max, x_min:x_max]
-                crop_resized = resize_preserve_aspect_ratio(crop, (112, 112))
-                crop_resized = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2RGB) / 255.0  # Normalize to [0, 1]
-                crops_data.append(crop_resized)
-
-                # Draw landmarks and bounding box on frame
                 self.mp_drawing.draw_landmarks(frame, hand_landmarks, mp.solutions.hands.HAND_CONNECTIONS)
+                x_min, y_min, x_max, y_max = get_bounding_box(hand_landmarks, self.frame_width, self.frame_height)
                 cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
 
-        # Pad to 2 hands if fewer detected
-        while len(skeletal_data) < 2:
-            skeletal_data.append([[0.0, 0.0, 0.0]] * 21)
-        while len(crops_data) < 2:
-            crops_data.append(np.zeros((112, 112, 3)))
+        frame_display = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = frame_display.shape
+        bytes_per_line = ch * w
+        q_image = QImage(frame_display.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        self.video_label.setPixmap(QPixmap.fromImage(q_image))
 
-        # Optical flow computation
-        optical_flow = np.zeros((2, 112, 112))  # Default zero flow
-        if self.prev_gray is not None:
-            flow = cv2.calcOpticalFlowFarneback(self.prev_gray, frame_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-            flow_resized = cv2.resize(flow, (112, 112))
-            optical_flow = flow_resized.transpose(2, 0, 1)  # Shape: (2, 112, 112)
-        self.prev_gray = frame_gray
+    def start_recording(self):
+        self.is_recording = True
+        self.skeletal_buffer = []
+        self.crops_buffer = []
+        self.optical_flow_buffer = []
+        self.prediction_label.setText("Recording...")
 
-        # Append to buffers
+    def append_to_buffers(self, skeletal_data, crops_data):
         self.skeletal_buffer.append(skeletal_data)
         self.crops_buffer.append(crops_data)
-        self.optical_flow_buffer.append([optical_flow, optical_flow])  # Duplicate for 2 hands
-
-        # Maintain buffer size
-        if len(self.skeletal_buffer) > self.sequence_length:
+        if len(self.skeletal_buffer) > self.max_sequence_length:
             self.skeletal_buffer.pop(0)
             self.crops_buffer.pop(0)
-            self.optical_flow_buffer.pop(0)
 
-        # Predict when buffer is full
-        if len(self.skeletal_buffer) == self.sequence_length:
-            # Prepare tensors for dataloader/model
-            skeletal_tensor = torch.tensor(self.skeletal_buffer, dtype=torch.float32).to(self.device)  # (T, 2, 21, 3)
-            crops_tensor = torch.tensor(self.crops_buffer, dtype=torch.float32).permute(0, 2, 3, 1).to(self.device)  # (T, 2, 112, 112, 3)
-            optical_flow_tensor = torch.tensor(self.optical_flow_buffer, dtype=torch.float32).to(self.device)  # (T, 2, 2, 112, 112)
-            input_lengths = torch.tensor([self.sequence_length], dtype=torch.long).to(self.device)
+    def stop_recording_and_predict(self):
+        self.is_recording = False
+        sequence_length = len(self.skeletal_buffer)
+        if sequence_length >= self.min_sequence_length:
+            skeletal_array = np.array(self.skeletal_buffer)  # (T, 2, 21, 3)
+            crops_array = np.array(self.crops_buffer, dtype=np.uint8)  # (T, 2, 112, 112, 3)
+
+            # Compute optical flow from crops
+            optical_flow_array = compute_optical_flow(crops_array)  # (T-1, 2, 2, 112, 112)
+
+            # Pad optical flow to T frames
+            T = skeletal_array.shape[0]
+            if optical_flow_array.shape[0] == T - 1:
+                zero_flow = np.zeros((1, 2, 112, 112, 2), dtype=optical_flow_array.dtype)
+                optical_flow_padded = np.concatenate([zero_flow, optical_flow_array], axis=0)  # (T, 2, 112, 112, 2)
+            else:
+                optical_flow_padded = optical_flow_array
+
+            # Convert to tensors
+            skeletal_tensor = torch.tensor(skeletal_array, dtype=torch.float32).to(self.device)  # (T, 2, 21, 3)
+            crops_tensor = torch.tensor(crops_array / 255.0, dtype=torch.float32).permute(0, 1, 4, 2, 3).to(self.device)  # (T, 2, 3, 112, 112)
+            optical_flow_tensor = torch.tensor(optical_flow_padded, dtype=torch.float32).to(self.device)  # (T, 2, 2, 112, 112)
+            input_lengths = torch.tensor([sequence_length], dtype=torch.long).to(self.device)
 
             # Add batch dimension
             skeletal_tensor = skeletal_tensor.unsqueeze(0)  # (1, T, 2, 21, 3)
-            crops_tensor = crops_tensor.unsqueeze(0)  # (1, T, 2, 112, 112, 3)
+            crops_tensor = crops_tensor.unsqueeze(0)  # (1, T, 2, 3, 112, 112)
             optical_flow_tensor = optical_flow_tensor.unsqueeze(0)  # (1, T, 2, 2, 112, 112)
 
             # Model inference
@@ -199,17 +245,47 @@ class CSLRWindow(QMainWindow):
                 pred_sequences = self.model.decode(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths)
                 pred_glosses = ' '.join([self.idx_to_gloss[idx] for idx in pred_sequences[0]])
                 self.prediction_label.setText(f"Prediction: {pred_glosses}")
+        else:
+            self.prediction_label.setText("Prediction: Sequence too short")
+        self.skeletal_buffer.clear()
+        self.crops_buffer.clear()
+        self.optical_flow_buffer.clear()
 
-        # Display the frame
-        frame_display = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame_display.shape
-        bytes_per_line = ch * w
-        q_image = QImage(frame_display.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        self.video_label.setPixmap(QPixmap.fromImage(q_image))
+    def process_frame_data(self, frame, results):
+        # Pre-allocate arrays for 2 hands
+        skeletal_data = np.zeros((self.MAX_HANDS, self.NUM_LANDMARKS, self.NUM_COORDS), dtype=np.float32)
+        crops_data = np.zeros((self.MAX_HANDS, *self.CROP_SIZE, 3), dtype=np.uint8)
+
+        if results.multi_hand_landmarks:
+            for idx, hand_landmarks in enumerate(results.multi_hand_landmarks[:self.MAX_HANDS]):  # Limit to MAX_HANDS
+                # Skeletal data
+                landmarks = [[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark]
+                normalized_landmarks = self.normalize_landmarks(landmarks)
+                skeletal_data[idx] = normalized_landmarks  # Assign to pre-allocated slot
+
+                # Crop data
+                x_min, y_min, x_max, y_max = get_bounding_box(hand_landmarks, self.frame_width, self.frame_height)
+                if x_max > x_min and y_max > y_min:
+                    crop = frame[y_min:y_max, x_min:x_max]  # BGR, uint8
+                    crop_resized = resize_preserve_aspect_ratio(crop, self.CROP_SIZE)
+                    crops_data[idx] = crop_resized  # Assign to pre-allocated slot
+
+        return skeletal_data, crops_data
+
+    def normalize_landmarks(self, landmarks):
+        wrist = landmarks[0]
+        translated = [[lm[0] - wrist[0], lm[1] - wrist[1], lm[2] - wrist[2]] for lm in landmarks]
+        ref_vec = [translated[9][i] for i in range(3)]
+        ref_length = np.sqrt(sum(v**2 for v in ref_vec))
+        if ref_length > 0:
+            normalized = [[lm[i] / ref_length for i in range(3)] for lm in translated]
+        else:
+            normalized = translated
+        return np.array(normalized, dtype=np.float32)  # Convert to array for consistency
 
     def closeEvent(self, event):
-        """Clean up resources on window close."""
-        self.cap.release()
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
         self.mp_hands.close()
         self.timer.stop()
         event.accept()
