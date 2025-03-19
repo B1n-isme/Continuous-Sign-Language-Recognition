@@ -12,7 +12,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load pre-trained RAFT model from torchvision and set to eval mode
 model = raft_small(weights=None)
-state_dict = torch.load("D:/Data/raft_small_C_T_V2-01064c6d.pth", map_location=device)
+state_dict = torch.load("/Users/binnu/Documents/Project/raft_small_C_T_V2-01064c6d.pth", map_location=device)
+# state_dict = torch.load("D:/Data/raft_small_C_T_V2-01064c6d.pth", map_location=device)
 model.load_state_dict(state_dict)
 model.eval()
 

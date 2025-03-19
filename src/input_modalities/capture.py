@@ -13,12 +13,21 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QHBoxLayout,
 )
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
 import mediapipe as mp
-from input_modalities.optical_flow_raft import compute_optical_flow
 import os
 import time
+import queue
+import threading
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
+from utils.helpers import (
+    get_bounding_box,
+    resize_preserve_aspect_ratio,
+    to_base64,
+)
+from input_modalities.optical_farneback import compute_optical_flow
 
 # Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
@@ -30,93 +39,81 @@ hands_detector = mp_hands.Hands(
 )
 mp_drawing = mp.solutions.drawing_utils
 
+# Global constants - move outside class for better performance
+MAX_HANDS = 2  # Maximum number of hands to detect
+NUM_LANDMARKS = 21  # MediaPipe hand has 21 landmarks
+NUM_COORDS = 3  # x, y, z coordinates
+CROP_SIZE = (112, 112)  # Resize dimension for cropped hands
+CROP_MARGIN = 40  # Margin for better hand context
 
-def to_base64(num):
-    """
-    Convert a number to base64 encoding using only filename-safe characters.
+# Frame buffer for producer-consumer pattern
+FRAME_BUFFER_SIZE = 10
 
-    Args:
-        num (int): The number to convert
-
-    Returns:
-        str: Base64 encoded string safe for filenames
-    """
-    # Use a filename-safe character set (no '/' or '+' that might be in standard base64)
-    chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_"
-    if num == 0:
-        return "0"
-
-    result = ""
-    while num > 0:
-        result = chars[num % 64] + result
-        num //= 64
-
-    return result
+# Debug flag - set to False in production for better performance
+DEBUG_DRAWING = False  # Controls whether to draw landmarks, bounding boxes, etc.
 
 
-def get_bounding_box(landmarks, width, height, margin=20):
-    """
-    Compute bounding box from hand landmarks with adjustable margin.
+class FrameCapturingThread(QThread):
+    """Thread for capturing frames from camera to decouple UI from frame capture."""
 
-    Args:
-        landmarks: MediaPipe hand landmarks object.
-        width: Frame width.
-        height: Frame height.
-        margin: Pixel margin to add around the detected hand.
+    frame_ready = pyqtSignal(np.ndarray)
 
-    Returns:
-        tuple: (x_min, y_min, x_max, y_max) coordinates.
-    """
-    x_coords = [lm.x * width for lm in landmarks.landmark]
-    y_coords = [lm.y * height for lm in landmarks.landmark]
+    def __init__(self, camera_index=0, width=1920, height=1080):
+        super().__init__()
+        self.camera_index = camera_index
+        self.width = width
+        self.height = height
+        self.running = False
+        self.cap = None
 
-    x_min = max(0, int(min(x_coords)) - margin)
-    y_min = max(0, int(min(y_coords)) - margin)
-    x_max = min(width, int(max(x_coords)) + margin)
-    y_max = min(height, int(max(y_coords)) + margin)
+    def run(self):
+        """Main loop for capturing frames."""
+        self.cap = cv2.VideoCapture(self.camera_index)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
 
-    return x_min, y_min, x_max, y_max
+        self.running = True
+        while self.running:
+            ret, frame = self.cap.read()
+            if ret:
+                # Flip the frame for mirror effect
+                frame = cv2.flip(frame, 1)
+                self.frame_ready.emit(frame)
+            else:
+                time.sleep(0.01)  # Short sleep to prevent CPU hogging
+
+    def stop(self):
+        """Stop the thread safely."""
+        self.running = False
+        if self.cap:
+            self.cap.release()
+        self.wait()
 
 
-def resize_preserve_aspect_ratio(image, target_size):
-    """
-    Resize image while preserving aspect ratio, then pad to target size.
+class DataSavingThread(QThread):
+    """Thread for saving data in background without blocking the UI."""
 
-    Args:
-        image: Input image (numpy array)
-        target_size: Desired output size as (width, height)
+    save_completed = pyqtSignal(bool, str)
 
-    Returns:
-        Resized and padded image
-    """
-    target_width, target_height = target_size
-    height, width = image.shape[:2]
+    def __init__(self, data_to_save, output_file):
+        super().__init__()
+        self.data_to_save = data_to_save
+        self.output_file = output_file
 
-    # Calculate the ratio of the target dimensions to the original dimensions
-    width_ratio = target_width / width
-    height_ratio = target_height / height
-
-    # Use the smaller ratio to ensure the image fits within the target dimensions
-    ratio = min(width_ratio, height_ratio)
-
-    # Calculate new dimensions
-    new_width = int(width * ratio)
-    new_height = int(height * ratio)
-
-    # Resize the image
-    resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
-
-    # Create a black canvas of the target size
-    canvas = np.zeros((target_height, target_width, 3), dtype=np.uint8)
-
-    # Calculate offsets to center the image
-    x_offset = (target_width - new_width) // 2
-    y_offset = (target_height - new_height) // 2
-
-    # Place the resized image on the canvas
-    canvas[y_offset : y_offset + new_height, x_offset : x_offset + new_width] = resized
-
-    return canvas
+    def run(self):
+        """Save the data to file in background."""
+        try:
+            np.savez_compressed(self.output_file, **self.data_to_save)
+            self.save_completed.emit(True, f"Data saved to {self.output_file}")
+            print(f"Data saved to {self.output_file}")
+            print(
+                f"Shapes - Skeletal: {self.data_to_save['skeletal_data'].shape}, "
+                f"Crops: {self.data_to_save['crops'].shape}, "
+                f"Optical: {self.data_to_save['optical_flow'].shape}"
+            )
+        except Exception as e:
+            self.save_completed.emit(False, f"Error saving data: {str(e)}")
+            print(f"Error saving data: {str(e)}")
 
 
 class SignLanguageCapture(QMainWindow):
@@ -124,41 +121,36 @@ class SignLanguageCapture(QMainWindow):
         super().__init__()
         self.setWindowTitle("Real-Time Sign Language Capture")
 
-        # Initialize camera with higher resolution
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+        # Initialize capture thread
+        self.capture_thread = FrameCapturingThread()
+        self.capture_thread.frame_ready.connect(self.process_frame)
+        self.capture_thread.start()
 
         # Get camera's native resolution
-        self.cam_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.cam_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.cam_width = 1920
+        self.cam_height = 1080
 
-        # Calculate a reasonable video display size that isn't too dominant
-        # Use 70% of camera resolution as a reasonable limit
+        # Calculate a reasonable video display size
         self.display_width = int(self.cam_width * 0.8)
         self.display_height = int(self.cam_height * 0.8)
 
-        # Data storage
-        self.captured_images = []  # Will be restructured
-        self.captured_landmarks = []  # Will be restructured
-        self.labels = []
+        # Pre-allocate arrays for better performance
+        # These will be reused rather than recreated each frame
+        self.frame_landmarks = np.zeros((MAX_HANDS, NUM_LANDMARKS, NUM_COORDS))
+        self.frame_crops = np.zeros((MAX_HANDS, *CROP_SIZE, 3), dtype=np.uint8)
 
-        # Constants for data structure
-        self.MAX_HANDS = 2  # Maximum number of hands to detect
-        self.NUM_LANDMARKS = 21  # MediaPipe hand has 21 landmarks
-        self.NUM_COORDS = 3  # x, y, z coordinates
-        self.CROP_SIZE = (112, 112)  # Resize dimension for cropped hands
-        self.CROP_MARGIN = 40  # Increased margin for better hand context
+        # Data storage
+        self.captured_images = []
+        self.captured_landmarks = []
+        self.labels = []
 
         # Recording state variables
         self.is_recording = False
         self.no_hands_counter = 0
-        self.no_hands_threshold = 10  # Stop recording after 10 frames with no hands
+        self.no_hands_threshold = 10
         self.frame_counter = 0
         self.last_hands_present = False
-        self.auto_save_on_stop = True  # Always auto-save
-
-        # Add a flag to track if data has been saved
+        self.auto_save_on_stop = True
         self.data_saved = True
 
         # UI Components
@@ -183,7 +175,7 @@ class SignLanguageCapture(QMainWindow):
         gloss_label = QLabel("Enter glosses sequence:")
         self.gloss_input = QLineEdit()
         self.gloss_input.setPlaceholderText("Enter space-separated glosses...")
-        self.gloss_input.setMinimumHeight(30)  # Make input field more visible
+        self.gloss_input.setMinimumHeight(30)
         gloss_layout.addWidget(gloss_label)
         gloss_layout.addWidget(self.gloss_input)
 
@@ -202,35 +194,27 @@ class SignLanguageCapture(QMainWindow):
 
         # Add controls to their dedicated layout
         controls_layout.addLayout(gloss_layout)
-        controls_layout.addLayout(quit_layout)  # Add the quit button layout
+        controls_layout.addLayout(quit_layout)
         controls_layout.addWidget(self.status_label)
-        controls_layout.setSpacing(10)  # Add some spacing between controls
+        controls_layout.setSpacing(10)
 
         # Main Layout
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.video_label)
         main_layout.addWidget(controls_widget)
-        # Add more spacing between video and controls
         main_layout.setSpacing(15)
 
         container = QWidget()
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
-        # Timer to update frames
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_frame)
-        self.timer.start(30)  # roughly 30 FPS
-
         # Variable to store the latest processed cropped hand image and landmarks
         self.latest_cropped = None
         self.latest_landmarks = None
         self.current_frame_has_hands = False
 
-        # Set a reasonable window size - smaller since we have fewer controls
-        self.resize(
-            self.display_width, self.display_height + 120
-        )  # Add space for controls
+        # Set a reasonable window size
+        self.resize(self.display_width, self.display_height + 120)
 
     def clear_glosses(self):
         """Clear the glosses input field."""
@@ -274,27 +258,23 @@ class SignLanguageCapture(QMainWindow):
         else:
             self.status_label.setText("Recording stopped. No frames captured.")
             self.status_label.setStyleSheet("color: orange; font-weight: bold;")
-            self.data_saved = True  # Mark as saved since there's nothing to save
+            self.data_saved = True
 
     def get_glosses(self):
         """Get the glosses from input field."""
         text = self.gloss_input.text().strip()
         return text.split() if text else []
 
-    def update_frame(self):
-        """Process camera frame and handle recording logic."""
-        ret, frame = self.cap.read()
-        if not ret:
-            return
-
-        # Flip the frame for natural interaction (mirror effect)
-        frame = cv2.flip(frame, 1)
-
+    def process_frame(self, frame):
+        """Process received frame from capture thread."""
         # Create a deep copy for processing to avoid modifying the original
         process_frame = frame.copy()
 
-        # Create a copy for annotations
-        annotated_frame = frame.copy()
+        # Create a copy for annotations (only if needed)
+        if DEBUG_DRAWING:
+            annotated_frame = frame.copy()
+        else:
+            annotated_frame = frame  # Just use the original frame to save memory
 
         # Process with MediaPipe
         process_frame.flags.writeable = False
@@ -308,11 +288,9 @@ class SignLanguageCapture(QMainWindow):
         )
         self.current_frame_has_hands = has_hands
 
-        # Initialize per-frame data structures for landmarks and crops
-        frame_landmarks = np.zeros(
-            (self.MAX_HANDS, self.NUM_LANDMARKS, self.NUM_COORDS)
-        )
-        frame_crops = np.zeros((self.MAX_HANDS, *self.CROP_SIZE, 3), dtype=np.uint8)
+        # Reset the arrays (faster than creating new ones)
+        self.frame_landmarks.fill(0)
+        self.frame_crops.fill(0)
 
         # Process hands if present
         if has_hands:
@@ -320,7 +298,7 @@ class SignLanguageCapture(QMainWindow):
             for hand_idx, (hand_landmarks, handedness) in enumerate(
                 zip(results.multi_hand_landmarks, results.multi_handedness)
             ):
-                if hand_idx >= self.MAX_HANDS:
+                if hand_idx >= MAX_HANDS:
                     break  # Skip if exceeding max hands
 
                 # Get hand type (left or right) and confidence
@@ -328,40 +306,43 @@ class SignLanguageCapture(QMainWindow):
                 hand_confidence = handedness.classification[0].score
 
                 # Assign storage index based on handedness
-                # Left hand goes to index 0, Right hand to index 1
                 storage_idx = 0 if hand_type == "Left" else 1
 
-                # Color for visualization
-                color = (0, 0, 255) if hand_type == "Left" else (0, 255, 0)
-
-                # Draw landmarks on annotated frame for visualization
-                mp_drawing.draw_landmarks(
-                    annotated_frame,
-                    hand_landmarks,
-                    mp_hands.HAND_CONNECTIONS,
-                    mp_drawing.DrawingSpec(color=color, thickness=2, circle_radius=2),
-                    mp_drawing.DrawingSpec(color=color, thickness=2),
-                )
+                # Color for visualization (only compute if drawing)
+                if DEBUG_DRAWING:
+                    color = (0, 0, 255) if hand_type == "Left" else (0, 255, 0)
+                    # Draw landmarks on annotated frame for visualization
+                    mp_drawing.draw_landmarks(
+                        annotated_frame,
+                        hand_landmarks,
+                        mp_hands.HAND_CONNECTIONS,
+                        mp_drawing.DrawingSpec(
+                            color=color, thickness=2, circle_radius=2
+                        ),
+                        mp_drawing.DrawingSpec(color=color, thickness=2),
+                    )
 
                 # Compute bounding box from landmarks with generous margin
                 h, w, _ = frame.shape
                 x_min, y_min, x_max, y_max = get_bounding_box(
-                    hand_landmarks, w, h, margin=self.CROP_MARGIN
+                    hand_landmarks, w, h, margin=CROP_MARGIN
                 )
 
-                # Draw the bounding box on the annotated frame
-                cv2.rectangle(annotated_frame, (x_min, y_min), (x_max, y_max), color, 2)
-
-                # Label the hand in the frame
-                cv2.putText(
-                    annotated_frame,
-                    f"{hand_type} ({hand_confidence:.2f})",
-                    (x_min, y_min - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    color,
-                    2,
-                )
+                # Draw the bounding box on the annotated frame (only if in debug mode)
+                if DEBUG_DRAWING:
+                    cv2.rectangle(
+                        annotated_frame, (x_min, y_min), (x_max, y_max), color, 2
+                    )
+                    # Label the hand in the frame
+                    cv2.putText(
+                        annotated_frame,
+                        f"{hand_type} ({hand_confidence:.2f})",
+                        (x_min, y_min - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        color,
+                        2,
+                    )
 
                 # Extract and process the hand region from the original clean frame
                 if x_max > x_min and y_max > y_min:  # Valid bounding box
@@ -369,19 +350,11 @@ class SignLanguageCapture(QMainWindow):
                     if hand_img.size > 0:
                         # Use better resizing method to maintain quality
                         cropped_resized = resize_preserve_aspect_ratio(
-                            hand_img, self.CROP_SIZE
+                            hand_img, CROP_SIZE
                         )
                         # Store in the position based on hand type
-                        frame_crops[storage_idx] = cropped_resized
+                        self.frame_crops[storage_idx] = cropped_resized
 
-                # Extract landmark coordinates for this hand
-                # for lm_idx, landmark in enumerate(hand_landmarks.landmark):
-                #     # Store in the position based on hand type
-                #     frame_landmarks[storage_idx, lm_idx] = [
-                #         landmark.x,
-                #         landmark.y,
-                #         landmark.z,
-                #     ]
                 # Extract landmarks
                 skeletal = {}
                 for idx, landmark in enumerate(hand_landmarks.landmark):
@@ -411,7 +384,7 @@ class SignLanguageCapture(QMainWindow):
 
                 # Store skeletal data
                 for idx in skeletal:
-                    frame_landmarks[storage_idx, idx] = skeletal[idx]
+                    self.frame_landmarks[storage_idx, idx] = skeletal[idx]
 
         # Auto-start recording if glosses are entered and hands appear
         glosses = self.get_glosses()
@@ -437,9 +410,9 @@ class SignLanguageCapture(QMainWindow):
                 self.no_hands_counter = 0
 
                 # Store frame data (landmarks and crops)
-                if frame_crops.any() and frame_landmarks.any():
-                    self.captured_landmarks.append(frame_landmarks.copy())
-                    self.captured_images.append(frame_crops.copy())
+                if self.frame_crops.any() and self.frame_landmarks.any():
+                    self.captured_landmarks.append(self.frame_landmarks.copy())
+                    self.captured_images.append(self.frame_crops.copy())
                     self.frame_counter += 1
 
                 # Update last state
@@ -530,40 +503,45 @@ class SignLanguageCapture(QMainWindow):
 
         try:
             # Convert lists to numpy arrays with proper shapes
-            # Landmarks shape: (num_frames, num_hands, num_landmarks, num_coords)
             skeletal_data = np.array(self.captured_landmarks)
-
-            # Crops shape: (num_frames, num_hands, height, width, channels)
             crops = np.array(self.captured_images)
 
+            # Use threading for optical flow computation as it's CPU intensive
+            self.status_label.setText("Processing optical flow data...")
+
+            # Prepare the data for saving
             optical = compute_optical_flow(crops)
 
-            # Save with the required keys
+            # Prepare data dict
             data = {
                 "skeletal_data": skeletal_data,
                 "crops": crops,
                 "optical_flow": optical,
                 "labels": np.array(glosses),
             }
-            np.savez_compressed(output_file, **data)
 
-            # Update status label only (no popup)
-            self.status_label.setText(
-                f"Data saved to {output_file} ({len(self.captured_images)} frames)"
-            )
-            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+            # Update status
+            self.status_label.setText("Saving data to file...")
 
-            # Mark data as saved
-            self.data_saved = True
-
-            # Log to console for debugging
-            print(f"Data saved silently to {output_file}")
-            print(f"Shapes - Skeletal: {skeletal_data.shape}, Crops: {crops.shape}, Optical: {optical.shape}")
+            # Save in a separate thread to avoid blocking UI
+            self.save_thread = DataSavingThread(data, output_file)
+            self.save_thread.save_completed.connect(self.on_save_completed)
+            self.save_thread.start()
 
         except Exception as e:
             self.status_label.setText(f"Error saving data: {str(e)}")
             self.status_label.setStyleSheet("color: red; font-weight: bold;")
             print(f"Error saving data: {str(e)}")
+
+    def on_save_completed(self, success, message):
+        """Handle completion of the data saving operation."""
+        if success:
+            self.status_label.setText(message)
+            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+            self.data_saved = True
+        else:
+            self.status_label.setText(message)
+            self.status_label.setStyleSheet("color: red; font-weight: bold;")
 
     def closeEvent(self, event):
         """Handle window close event."""
@@ -576,8 +554,11 @@ class SignLanguageCapture(QMainWindow):
         # Only save if there's unsaved data
         if len(self.captured_images) > 0 and not self.data_saved:
             self.save_data()
+            # Wait briefly to allow save to start
+            QApplication.processEvents()
 
-        self.cap.release()
+        # Stop the capture thread
+        self.capture_thread.stop()
         super().closeEvent(event)
 
 
