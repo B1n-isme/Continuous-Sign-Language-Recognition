@@ -123,7 +123,7 @@ def generate_variants(skeletal_data):
     return variants
 
 
-def process_file(file_path):
+def process_file(file_path, output_dir):
     """
     Process a single data file and generate augmented variants.
 
@@ -147,7 +147,7 @@ def process_file(file_path):
             skeletal_variant, crops, optical_flow, name
         )
 
-        output_path = f"data/processed/{base_name}_{name}.npz"
+        output_path = os.path.join(output_dir, f"{base_name}_{name}.npz")
 
         np.savez(
             output_path,
@@ -165,8 +165,9 @@ def process_file(file_path):
 
 def main():
     """Main function to process all raw data files."""
+    output_dir = "data/processed"
     # Create output directory if it doesn't exist
-    os.makedirs("data/processed", exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # Get all .npz files in the raw data directory
     raw_files = glob.glob("data/raw/*.npz")
@@ -179,7 +180,7 @@ def main():
 
     # Process each file
     for file_path in raw_files:
-        process_file(file_path)
+        process_file(file_path, output_dir)
 
     print("All files processed successfully.")
 

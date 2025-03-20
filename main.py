@@ -4,14 +4,154 @@ import sys
 import cv2
 import numpy as np
 import torch
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout, QWidget
-from PyQt5.QtCore import QTimer, Qt
+import queue
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
 import mediapipe as mp
 
 from src.utils.helpers import get_bounding_box, resize_preserve_aspect_ratio
 from src.models.model import CSLRModel
 from src.input_modalities.optical_farneback import compute_optical_flow
+
+# -------------------- Capture & Processing Threads --------------------
+
+class CaptureThread(QThread):
+    """Continuously capture frames from the camera and push them into a queue."""
+    def __init__(self, cap, frame_queue, width, height):
+        super().__init__()
+        self.cap = cap
+        self.frame_queue = frame_queue
+        self.width = width
+        self.height = height
+        self.running = True
+
+    def run(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if ret:
+                # Mirror effect
+                frame = cv2.flip(frame, 1)
+                # Always keep only the latest frame in the queue
+                try:
+                    self.frame_queue.put_nowait(frame)
+                except queue.Full:
+                    try:
+                        self.frame_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    self.frame_queue.put_nowait(frame)
+            else:
+                self.msleep(1)  # minimal sleep to reduce CPU load
+
+    def stop(self):
+        self.running = False
+        self.wait()
+
+
+class ProcessingThread(QThread):
+    """
+    Continuously pull the latest frame from the queue, process it
+    with MediaPipe and compute skeletal and crop data.
+    """
+    frame_processed = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, bool)
+
+    def __init__(self, frame_queue, frame_width, frame_height, crop_size, max_hands=2):
+        super().__init__()
+        self.frame_queue = frame_queue
+        self.frame_width = frame_width
+        self.frame_height = frame_height
+        self.crop_size = crop_size
+        self.max_hands = max_hands
+        self.running = True
+
+        # Initialize MediaPipe Hands once (reuse for performance)
+        self.mp_hands = mp.solutions.hands.Hands(
+            max_num_hands=2, min_detection_confidence=0.7
+        )
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.CROP_MARGIN = 40  # as in original
+
+    def run(self):
+        while self.running:
+            try:
+                frame = self.frame_queue.get(timeout=0.005)
+            except queue.Empty:
+                continue
+            annotated, skeletal_data, crops_data, has_hands = self.process_frame(frame)
+            self.frame_processed.emit(annotated, skeletal_data, crops_data, has_hands)
+
+    def process_frame(self, frame):
+        # Create a copy for processing and (if needed) annotation
+        proc_frame = frame.copy()
+        # If not debugging, we can use the same frame to save memory
+        annotated = proc_frame.copy()
+        
+        proc_frame.flags.writeable = False
+        rgb_frame = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
+        results = self.mp_hands.process(rgb_frame)
+        proc_frame.flags.writeable = True
+
+        has_hands = results.multi_hand_landmarks is not None
+
+        # Pre-allocate arrays for up to 2 hands
+        NUM_LANDMARKS = 21
+        NUM_COORDS = 3
+        skeletal_data = np.zeros((self.max_hands, NUM_LANDMARKS, NUM_COORDS), dtype=np.float32)
+        crops_data = np.zeros((self.max_hands, *self.crop_size, 3), dtype=np.uint8)
+
+        if has_hands:
+            for idx, hand_landmarks in enumerate(results.multi_hand_landmarks[: self.max_hands]):
+                # Determine hand type for ordering (Left=slot 0, Right=slot 1)
+                hand_type = results.multi_handedness[idx].classification[0].label
+                storage_idx = 0 if hand_type == "Left" else 1
+                color = (0, 0, 255) if hand_type == "Left" else (0, 255, 0)
+                
+                # Optionally draw landmarks if needed (e.g. for debug)
+                # self.mp_drawing.draw_landmarks(annotated, hand_landmarks, mp.solutions.hands.HAND_CONNECTIONS)
+
+                # Compute bounding box with margin
+                x_min, y_min, x_max, y_max = get_bounding_box(hand_landmarks, self.frame_width, self.frame_height, margin=self.CROP_MARGIN)
+                # Draw box for visualization if desired
+                cv2.rectangle(annotated, (x_min, y_min), (x_max, y_max), color, 2)
+                cv2.putText(annotated, f"{hand_type}", (x_min, y_min - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                # Crop and resize the hand region
+                if x_max > x_min and y_max > y_min:
+                    hand_img = frame[y_min:y_max, x_min:x_max]
+                    if hand_img.size:
+                        crop_resized = resize_preserve_aspect_ratio(hand_img.copy(), self.crop_size)
+                        crops_data[storage_idx] = crop_resized
+
+                # Vectorized normalization of landmarks
+                landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark], dtype=np.float32)
+                # Translate landmarks so wrist (index 0) is the origin
+                landmarks -= landmarks[0]
+                # Scale normalization using distance from wrist to middle finger MCP (index 9)
+                ref_length = np.linalg.norm(landmarks[9])
+                if ref_length > 0:
+                    landmarks /= ref_length
+                # Optional depth normalization
+                z_max = np.max(np.abs(landmarks[:, 2]))
+                if z_max > 0:
+                    landmarks[:, 2] /= z_max
+                skeletal_data[storage_idx] = landmarks
+
+        return annotated, skeletal_data, crops_data, has_hands
+
+    def stop(self):
+        self.running = False
+        self.wait()
+
+# -------------------- Main Application --------------------
 
 class CSLRWindow(QMainWindow):
     def __init__(self):
@@ -27,31 +167,20 @@ class CSLRWindow(QMainWindow):
         self.idx_to_gloss = {idx: gloss for gloss, idx in self.vocab.items()}
         self.model = self.load_model()
 
-        # MediaPipe setup
-        self.mp_hands = mp.solutions.hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
-        self.mp_drawing = mp.solutions.drawing_utils
+        # MediaPipe will be used in the processing thread
 
-        # Video capture initialization
-        self.cap = None
-        self.initialize_camera()
-
-        # Recording state variables
+        # Recording state variables and buffers
         self.is_recording = False
         self.no_hands_counter = 0
         self.no_hands_threshold = 10
         self.min_sequence_length = 10
         self.max_sequence_length = 100
-
-        # Constants for pre-allocation
-        self.MAX_HANDS = 2
-        self.NUM_LANDMARKS = 21
-        self.NUM_COORDS = 3
-        self.CROP_SIZE = (112, 112)
-
-        # Dynamic buffers
         self.skeletal_buffer = []
         self.crops_buffer = []
-        self.optical_flow_buffer = []
+
+        # Constants for pre-allocation in processing thread
+        self.MAX_HANDS = 2
+        self.CROP_SIZE = (112, 112)
 
         # GUI components
         self.video_label = QLabel(self)
@@ -60,7 +189,7 @@ class CSLRWindow(QMainWindow):
         self.start_button = QPushButton("Start", self)
         self.stop_button = QPushButton("Stop", self)
 
-        # Layout
+        # Layout setup
         layout = QVBoxLayout()
         layout.addWidget(self.video_label)
         layout.addWidget(self.prediction_label)
@@ -74,38 +203,47 @@ class CSLRWindow(QMainWindow):
         self.start_button.clicked.connect(self.start_capture)
         self.stop_button.clicked.connect(self.stop_capture)
 
-        # Timer for video feed
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_frame)
-
-    def initialize_camera(self):
-        camera_indices = [0, 1, 2]
-        for index in camera_indices:
-            self.cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
-            if self.cap.isOpened():
-                break
-            self.cap.release()
-            self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-            if self.cap.isOpened():
-                break
-            self.cap.release()
-
-        if not self.cap or not self.cap.isOpened():
-            self.prediction_label.setText("Error: Could not open camera")
-            self.start_button.setEnabled(False)
+        # Camera initialization
+        self.cap = None
+        self.initialize_camera()
+        if not (self.cap and self.cap.isOpened()):
             return
-
         self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        print(f"Camera opened at index {index} with resolution {self.frame_width}x{self.frame_height}")
+        print(f"Camera initialized: {self.frame_width}x{self.frame_height}")
+
+        # Create a queue to hold only the latest frame
+        self.frame_queue = queue.Queue(maxsize=1)
+        # Start capture and processing threads
+        self.capture_thread = CaptureThread(self.cap, self.frame_queue, self.frame_width, self.frame_height)
+        self.processing_thread = ProcessingThread(self.frame_queue, self.frame_width, self.frame_height, self.CROP_SIZE)
+        self.processing_thread.frame_processed.connect(self.on_frame_processed)
+        self.capture_thread.start()
+        self.processing_thread.start()
+
+    def initialize_camera(self):
+        """Try several camera indices to initialize the video capture."""
+        camera_indices = [0, 1, 2, 3]
+        for index in camera_indices:
+            print(f"Attempting to open camera at index {index}...")
+            cap = cv2.VideoCapture(index)
+            if cap is not None and cap.isOpened():
+                self.cap = cap
+                print(f"Camera opened at index {index}")
+                return
+            if cap:
+                cap.release()
+        print("Failed to open any camera")
+        self.prediction_label.setText("Error: Could not open camera")
+        self.start_button.setEnabled(False)
 
     def load_vocab(self, json_path):
         try:
-            with open(json_path, 'r') as f:
+            with open(json_path, "r") as f:
                 vocab = json.load(f)
             return vocab
         except Exception as e:
-            print(f"Error loading vocab from JSON: {e}")
+            print(f"Error loading vocab: {e}")
             raise
 
     def load_model(self):
@@ -115,7 +253,7 @@ class CSLRWindow(QMainWindow):
             "out_channels": 256,
             "kernel_sizes": [3, 5, 7],
             "dilations": [1, 2, 4],
-            "vocab_size": self.vocab_size
+            "vocab_size": self.vocab_size,
         }
         transformer_params = {
             "input_dim": 2 * 256,
@@ -123,54 +261,50 @@ class CSLRWindow(QMainWindow):
             "num_heads": 4,
             "num_layers": 2,
             "vocab_size": self.vocab_size,
-            "dropout": 0.1
+            "dropout": 0.1,
         }
         enstim_params = {
             "vocab_size": self.vocab_size,
             "context_dim": 256,
             "blank": 0,
-            "lambda_entropy": 0.1
+            "lambda_entropy": 0.1,
         }
-        model = CSLRModel(spatial_params, temporal_params, transformer_params, enstim_params, device=self.device).to(self.device)
+        model = CSLRModel(
+            spatial_params,
+            temporal_params,
+            transformer_params,
+            enstim_params,
+            device=self.device,
+        ).to(self.device)
         checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=True)
         model.load_state_dict(checkpoint)
         model.eval()
         return model
 
     def start_capture(self):
-        if not self.cap or not self.cap.isOpened():
+        if not (self.cap and self.cap.isOpened()):
             self.prediction_label.setText("Error: Camera not available")
             return
-        self.timer.start(30)
         self.prediction_label.setText("Prediction: Waiting for hands...")
 
     def stop_capture(self):
-        self.timer.stop()
+        # Stop recording buffers (video feed threads remain running)
         self.is_recording = False
         self.no_hands_counter = 0
         self.skeletal_buffer.clear()
         self.crops_buffer.clear()
-        self.optical_flow_buffer.clear()
         self.prediction_label.setText("Prediction: Stopped")
 
-    def update_frame(self):
-        if not self.cap or not self.cap.isOpened():
-            self.prediction_label.setText("Error: Camera not available")
-            self.timer.stop()
-            return
-
-        ret, frame = self.cap.read()
-        if not ret:
-            self.prediction_label.setText("Error: Failed to capture frame")
-            return
-
-        frame = cv2.flip(frame, 1)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.mp_hands.process(frame_rgb)
-        has_hands = bool(results.multi_hand_landmarks)
-
-        # Process frame data
-        skeletal_data, crops_data = self.process_frame_data(frame, results)
+    def on_frame_processed(self, annotated_frame, skeletal_data, crops_data, has_hands):
+        # Update the video display
+        image = QImage(
+            annotated_frame.data,
+            annotated_frame.shape[1],
+            annotated_frame.shape[0],
+            annotated_frame.strides[0],
+            QImage.Format_BGR888,
+        )
+        self.video_label.setPixmap(QPixmap.fromImage(image))
 
         # Dynamic recording logic
         if has_hands:
@@ -184,29 +318,16 @@ class CSLRWindow(QMainWindow):
                 if self.no_hands_counter >= self.no_hands_threshold:
                     self.stop_recording_and_predict()
 
-        # Display the frame with annotations
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                self.mp_drawing.draw_landmarks(frame, hand_landmarks, mp.solutions.hands.HAND_CONNECTIONS)
-                x_min, y_min, x_max, y_max = get_bounding_box(hand_landmarks, self.frame_width, self.frame_height)
-                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-
-        frame_display = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame_display.shape
-        bytes_per_line = ch * w
-        q_image = QImage(frame_display.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        self.video_label.setPixmap(QPixmap.fromImage(q_image))
-
     def start_recording(self):
         self.is_recording = True
-        self.skeletal_buffer = []
-        self.crops_buffer = []
-        self.optical_flow_buffer = []
+        self.skeletal_buffer.clear()
+        self.crops_buffer.clear()
         self.prediction_label.setText("Recording...")
 
     def append_to_buffers(self, skeletal_data, crops_data):
         self.skeletal_buffer.append(skeletal_data)
         self.crops_buffer.append(crops_data)
+        # Limit buffer to max sequence length
         if len(self.skeletal_buffer) > self.max_sequence_length:
             self.skeletal_buffer.pop(0)
             self.crops_buffer.pop(0)
@@ -218,77 +339,44 @@ class CSLRWindow(QMainWindow):
             skeletal_array = np.array(self.skeletal_buffer)  # (T, 2, 21, 3)
             crops_array = np.array(self.crops_buffer, dtype=np.uint8)  # (T, 2, 112, 112, 3)
 
-            # Compute optical flow from crops
+            # Compute optical flow from crops (assumed to be CPU-intensive)
             optical_flow_array = compute_optical_flow(crops_array)  # (T-1, 2, 2, 112, 112)
-
-            # Pad optical flow to T frames
             T = skeletal_array.shape[0]
             if optical_flow_array.shape[0] == T - 1:
                 zero_flow = np.zeros((1, 2, 112, 112, 2), dtype=optical_flow_array.dtype)
-                optical_flow_padded = np.concatenate([zero_flow, optical_flow_array], axis=0)  # (T, 2, 112, 112, 2)
+                optical_flow_padded = np.concatenate([zero_flow, optical_flow_array], axis=0)
             else:
                 optical_flow_padded = optical_flow_array
 
-            # Convert to tensors
-            skeletal_tensor = torch.tensor(skeletal_array, dtype=torch.float32).to(self.device)  # (T, 2, 21, 3)
-            crops_tensor = torch.tensor(crops_array / 255.0, dtype=torch.float32).permute(0, 1, 4, 2, 3).to(self.device)  # (T, 2, 3, 112, 112)
-            optical_flow_tensor = torch.tensor(optical_flow_padded, dtype=torch.float32).to(self.device)  # (T, 2, 2, 112, 112)
+            # Convert to tensors and add batch dimension
+            skeletal_tensor = torch.tensor(skeletal_array, dtype=torch.float32).to(self.device).unsqueeze(0)  # (1, T, 2, 21, 3)
+            crops_tensor = (
+                torch.tensor(crops_array / 255.0, dtype=torch.float32)
+                .permute(0, 1, 4, 2, 3)
+                .to(self.device)
+                .unsqueeze(0)  # (1, T, 2, 3, 112, 112)
+            )
+            optical_flow_tensor = torch.tensor(optical_flow_padded, dtype=torch.float32).to(self.device).unsqueeze(0)  # (1, T, 2, 2, 112, 112)
             input_lengths = torch.tensor([sequence_length], dtype=torch.long).to(self.device)
-
-            # Add batch dimension
-            skeletal_tensor = skeletal_tensor.unsqueeze(0)  # (1, T, 2, 21, 3)
-            crops_tensor = crops_tensor.unsqueeze(0)  # (1, T, 2, 3, 112, 112)
-            optical_flow_tensor = optical_flow_tensor.unsqueeze(0)  # (1, T, 2, 2, 112, 112)
 
             # Model inference
             with torch.no_grad():
                 pred_sequences = self.model.decode(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths)
-                pred_glosses = ' '.join([self.idx_to_gloss[idx] for idx in pred_sequences[0]])
+                pred_glosses = " ".join([self.idx_to_gloss[idx] for idx in pred_sequences[0]])
                 self.prediction_label.setText(f"Prediction: {pred_glosses}")
         else:
             self.prediction_label.setText("Prediction: Sequence too short")
         self.skeletal_buffer.clear()
         self.crops_buffer.clear()
-        self.optical_flow_buffer.clear()
-
-    def process_frame_data(self, frame, results):
-        # Pre-allocate arrays for 2 hands
-        skeletal_data = np.zeros((self.MAX_HANDS, self.NUM_LANDMARKS, self.NUM_COORDS), dtype=np.float32)
-        crops_data = np.zeros((self.MAX_HANDS, *self.CROP_SIZE, 3), dtype=np.uint8)
-
-        if results.multi_hand_landmarks:
-            for idx, hand_landmarks in enumerate(results.multi_hand_landmarks[:self.MAX_HANDS]):  # Limit to MAX_HANDS
-                # Skeletal data
-                landmarks = [[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark]
-                normalized_landmarks = self.normalize_landmarks(landmarks)
-                skeletal_data[idx] = normalized_landmarks  # Assign to pre-allocated slot
-
-                # Crop data
-                x_min, y_min, x_max, y_max = get_bounding_box(hand_landmarks, self.frame_width, self.frame_height)
-                if x_max > x_min and y_max > y_min:
-                    crop = frame[y_min:y_max, x_min:x_max]  # BGR, uint8
-                    crop_resized = resize_preserve_aspect_ratio(crop, self.CROP_SIZE)
-                    crops_data[idx] = crop_resized  # Assign to pre-allocated slot
-
-        return skeletal_data, crops_data
-
-    def normalize_landmarks(self, landmarks):
-        wrist = landmarks[0]
-        translated = [[lm[0] - wrist[0], lm[1] - wrist[1], lm[2] - wrist[2]] for lm in landmarks]
-        ref_vec = [translated[9][i] for i in range(3)]
-        ref_length = np.sqrt(sum(v**2 for v in ref_vec))
-        if ref_length > 0:
-            normalized = [[lm[i] / ref_length for i in range(3)] for lm in translated]
-        else:
-            normalized = translated
-        return np.array(normalized, dtype=np.float32)  # Convert to array for consistency
 
     def closeEvent(self, event):
+        # Stop threads and release resources
         if self.cap and self.cap.isOpened():
             self.cap.release()
-        self.mp_hands.close()
-        self.timer.stop()
+        self.processing_thread.stop()
+        self.capture_thread.stop()
         event.accept()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
