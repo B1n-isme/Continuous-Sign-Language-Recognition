@@ -27,6 +27,12 @@ class Graph:
         A = D @ A @ D
         return A
 
+
+# Graph Convolution Network (GCN) Enhancements:
+# Multi-Scale Graphs: If you’re using GCNs, consider defining multiple adjacency matrices to represent different spatial relationships (e.g., local connections within fingers and broader hand-level connections). This captures varying levels of detail.
+# Attention Mechanisms: Add an attention layer to your GCN (e.g., Graph Attention Network, GAT) so the model dynamically focuses on the most relevant joints or connections for each gesture.
+# Higher-Order Convolutions: Use advanced graph convolutions (e.g., Chebyshev filters) to model more complex spatial dependencies beyond immediate neighbors.
+
 class GraphConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels, A, device='cpu'):
         super(GraphConvLayer, self).__init__()
@@ -165,16 +171,16 @@ class SpatialEncoding(nn.Module):
         self.graph_layer2 = GraphConvLayer(32, 32, A, device)  # 32 -> 32
         
         # CNNs for RGB and Optical Flow (using MobileNet V3 Small)
-        self.cnn_rgb = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
-        # self.cnn_rgb = models.mobilenet_v3_small(weights=None)
-        # state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
-        # self.cnn_rgb.load_state_dict(state_dict)
+        # self.cnn_rgb = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
+        self.cnn_rgb = models.mobilenet_v3_small(weights=None)
+        state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
+        self.cnn_rgb.load_state_dict(state_dict)
         self.cnn_rgb.eval()
 
-        self.cnn_flow = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
-        # self.cnn_flow = models.mobilenet_v3_small(weights=None)
-        # state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
-        # self.cnn_flow.load_state_dict(state_dict)
+        # self.cnn_flow = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
+        self.cnn_flow = models.mobilenet_v3_small(weights=None)
+        state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
+        self.cnn_flow.load_state_dict(state_dict)
         self.cnn_flow.eval()
 
 

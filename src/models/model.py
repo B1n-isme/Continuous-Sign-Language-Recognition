@@ -1,22 +1,31 @@
+import os
+import tempfile
+import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchaudio.pipelines import CTCDecoder
+from torchaudio.models.decoder import ctc_decoder
 
-from src.models.spatial_encoding.spatial_encoding import SpatialEncoding
-from src.models.temporal_encoding.tempconv import TemporalEncoding
-from src.models.sequence_learning.transformer import TransformerSequenceLearning
-from src.models.alignment.enstim_ctc import EnStimCTC
-# from spatial_encoding.spatial_encoding import SpatialEncoding
-# from temporal_encoding.tempconv import TemporalEncoding
-# from sequence_learning.transformer import TransformerSequenceLearning
-# from alignment.enstim_ctc import EnStimCTC
+# from src.models.spatial_encoding.spatial_encoding import SpatialEncoding
+# from src.models.temporal_encoding.tempconv import TemporalEncoding
+# from src.models.sequence_learning.transformer import TransformerSequenceLearning
+# from src.models.alignment.enstim_ctc import EnStimCTC
+from spatial_encoding.spatial_encoding import SpatialEncoding
+from temporal_encoding.tempconv import TemporalEncoding
+from sequence_learning.transformer import TransformerSequenceLearning
+from alignment.enstim_ctc import EnStimCTC
+
 
 class CSLRModel(nn.Module):
-    def __init__(self, spatial_params, temporal_params, transformer_params, enstim_params, idx_to_gloss, device='cpu'):
+    def __init__(self, spatial_params, temporal_params, transformer_params, enstim_params, label_mapping_path, device='cpu'):
         super(CSLRModel, self).__init__()
         self.device = torch.device(device)
-        self.idx_to_gloss = idx_to_gloss  # Mapping from indices to gloss names
+        # Load label-idx mapping from JSON
+        with open(label_mapping_path, 'r') as f:
+            gloss_to_idx = json.load(f)
+        self.idx_to_gloss = {int(idx): gloss for gloss, idx in gloss_to_idx.items()}
+        
+        # self.idx_to_gloss = idx_to_gloss  # Mapping from indices to gloss names
         
         self.spatial_encoding = SpatialEncoding(**spatial_params, device=device)
         self.temporal_encoding = TemporalEncoding(**temporal_params, device=device)
@@ -56,81 +65,68 @@ class CSLRModel(nn.Module):
             spatial_features = self.spatial_encoding(skeletal, crops, optical_flow)
             temporal_features, _ = self.temporal_encoding(spatial_features)
             gloss_probs, _ = self.transformer_sequence_learning(temporal_features)
-            return self.enstim_ctc.decode(gloss_probs, input_lengths)
+            indices = self.enstim_ctc.decode(gloss_probs, input_lengths)
+            # Convert indices to gloss strings using self.idx_to_gloss
+            glosses = [[self.idx_to_gloss[idx] for idx in seq] for seq in indices]
+            return glosses
 
     def decode_with_lm(self, skeletal, crops, optical_flow, input_lengths, lm_path, beam_size=10, lm_weight=0.5):
-        """
-        Decode using beam search with an external n-gram language model via torchaudio.
-        
-        Args:
-            skeletal (Tensor): Skeletal data (B, T, num_hands, 21, 3)
-            crops (Tensor): Hand crop images (B, T, num_hands, 3, H, W)
-            optical_flow (Tensor): Optical flow (B, T, num_hands, 2, H, W)
-            input_lengths (Tensor): Lengths of input sequences (B,)
-            lm_path (str): Path to the KenLM binary file (e.g., model.klm)
-            beam_size (int): Number of beams for beam search
-            lm_weight (float): Weight for LM score
-        
-        Returns:
-            list: Decoded gloss sequences as lists of strings, one per batch item
-        """
         with torch.no_grad():
             spatial_features = self.spatial_encoding(skeletal, crops, optical_flow)
             temporal_features, _ = self.temporal_encoding(spatial_features)
             gloss_probs, _ = self.transformer_sequence_learning(temporal_features)
             log_probs = self.enstim_ctc.decode(gloss_probs, input_lengths, return_log_probs=True)
-            # log_probs shape: (B, T, vocab_size)
 
-            # Define tokens (gloss names, with "" for blank)
-            tokens = [""] + [self.idx_to_gloss[i] for i in range(1, self.enstim_ctc.vocab_size)]
+            # Define tokens (blank, silence, unk, glosses)
+            tokens = ["", "|", "<unk>"] + [self.idx_to_gloss[i] for i in range(1, self.enstim_ctc.vocab_size)]
+
+            # Generate lm_dict content (include silence and unk)
+            lm_dict_content = ["|", "<unk>"] + [self.idx_to_gloss[i] for i in range(1, self.enstim_ctc.vocab_size)]
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as tmp:
+                tmp.write("\n".join(lm_dict_content))
+                lm_dict_path = tmp.name
 
             # Initialize CTC beam decoder
-            decoder = CTCDecoder(
-                lexicon=None,  # No lexicon (word-to-token mapping) needed for glosses
+            decoder = ctc_decoder(
+                lexicon=None,
                 tokens=tokens,
                 lm=lm_path,
-                blank_token="",
-                sil_token=None,  # No silence token needed
-                unk_word=None,   # No unknown word handling
-                nbest=1,         # Return only the best sequence
+                lm_dict=lm_dict_path,
+                nbest=1,
                 beam_size=beam_size,
+                beam_size_token=None,
+                beam_threshold=50.0,
                 lm_weight=lm_weight,
-                word_weight=0.0,  # No extra word insertion penalty
-                lex_weight=0.0    # No lexicon weight (not using lexicon)
+                word_score=0.0,
+                unk_score=float('-inf'),
+                sil_score=0.0,
+                log_add=False,
+                blank_token="",
+                sil_token="|",
+                unk_word="<unk>"
             )
 
             # Perform beam search decoding
             decoded = decoder(log_probs, input_lengths)
 
-            # Extract the best sequence for each batch item
+            # Clean up temporary file
+            os.unlink(lm_dict_path)
+
+            # Extract and filter the best sequence
             results = []
             for b in range(log_probs.shape[0]):
-                best_seq = decoded[b][0][0]  # (nbest, (tokens, score)) -> tokens of best hypothesis
-                results.append(best_seq)
+                best_seq = decoded[b][0][0]  # Tensor of token indices
+                # Convert indices to strings using tokens list
+                gloss_seq = [tokens[idx.item()] for idx in best_seq]
+                # Filter out special tokens
+                filtered_seq = [token for token in gloss_seq if token not in ["", "|", "<unk>"]]
+                results.append(filtered_seq)
             return results
 
 # Example usage:
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vocab_size = 14  # 13 glosses + 1 blank
-    
-    # Define idx_to_gloss mapping
-    idx_to_gloss = {
-        0: "",  # Blank token
-        1: "HELLO",
-        2: "I",
-        3: "HAVE",
-        4: "GOOD",
-        5: "LUNCH",
-        6: "YOU",
-        7: "AND",
-        8: "WHAT",
-        9: "ARE",
-        10: "DO",
-        11: "PLEASE",
-        12: "THANK",
-        13: "BYE"
-    }
 
     # Define module parameter dictionaries
     spatial_params = {"D_spatial": 128}
@@ -156,8 +152,9 @@ if __name__ == "__main__":
         "lambda_entropy": 0.1
     }
     
-    # Instantiate the model
-    model = CSLRModel(spatial_params, temporal_params, transformer_params, enstim_params, idx_to_gloss, device=device).to(device)
+    # Instantiate the model with JSON mapping
+    label_mapping_path = "data/label-idx-mapping.json"
+    model = CSLRModel(spatial_params, temporal_params, transformer_params, enstim_params, label_mapping_path, device=device).to(device)
     
     # Create dummy input data
     B, T, num_hands = 1, 156, 2
@@ -169,9 +166,9 @@ if __name__ == "__main__":
     # Greedy decoding (original)
     decoded_greedy = model.decode(skeletal, crops, optical_flow, input_lengths)
     print(f"Greedy Decoded (indices): {decoded_greedy}")
-    print(f"Greedy Decoded (glosses): {' '.join([idx_to_gloss[idx] for idx in decoded_greedy[0]])}")
+    print(f"Greedy Decoded (glosses): {' '.join([model.idx_to_gloss[idx] for idx in decoded_greedy[0]])}")
     
     # Beam search decoding with LM
-    lm_path = "path/to/model.klm"  # Replace with actual path to your KenLM binary file
+    lm_path = "models\checkpoints\kenlm.binary"  # Replace with actual path to your KenLM binary file
     decoded_beam = model.decode_with_lm(skeletal, crops, optical_flow, input_lengths, lm_path=lm_path, beam_size=10)
     print(f"Beam Decoded (glosses): {' '.join(decoded_beam[0])}")
