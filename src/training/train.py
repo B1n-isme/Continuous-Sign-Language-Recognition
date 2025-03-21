@@ -34,7 +34,7 @@ if __name__ == "__main__":
     num_epochs = 50
     learning_rate = 1e-3
     weight_decay = 1e-5
-    patience = 10  # Early stopping patience
+    patience = 10
 
     # Create checkpoint directory if it doesn't exist
     os.makedirs(save_dir, exist_ok=True)
@@ -48,8 +48,8 @@ if __name__ == "__main__":
         raise
 
     # Build vocabulary from labels
-    label_dict = load_labels(labels_csv)  # Replace with your implementation
-    vocab = build_vocab(label_dict)         # Replace with your implementation
+    label_dict = load_labels(labels_csv)
+    vocab = build_vocab(label_dict)
     vocab_size = len(vocab)
     logging.info(f"Vocabulary size: {vocab_size}")
 
@@ -84,7 +84,7 @@ if __name__ == "__main__":
         "vocab_size": vocab_size
     }
     transformer_params = {
-        "input_dim": 2 * 256,  # 2 hands * 256 features
+        "input_dim": 2 * 256,
         "model_dim": 256,
         "num_heads": 4,
         "num_layers": 2,

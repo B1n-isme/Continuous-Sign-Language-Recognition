@@ -55,7 +55,7 @@ class EnStimCTC(nn.Module):
         loss = ctc_loss - self.lambda_entropy * entropy_mean
         return loss
 
-    def decode(self, x, input_lengths):
+    def decode(self, x, input_lengths, return_log_probs=False):
         x = x.to(self.device)
         input_lengths = input_lengths.to(self.device)
         with torch.no_grad():
@@ -65,18 +65,21 @@ class EnStimCTC(nn.Module):
             context_logits = self.context_proj(context)
             combined_logits = x + torch.clamp(self.combination_weight, 0.0, 1.0) * context_logits
             log_probs = self.log_softmax(combined_logits)
-            preds = log_probs.argmax(dim=2)
-            decoded = []
-            for b in range(x.shape[0]):
-                seq = []
-                prev = -1
-                for t in range(input_lengths[b]):
-                    current = preds[b, t].item()
-                    if current != self.blank and current != prev:
-                        seq.append(current)
-                    prev = current if current != self.blank else prev
-                decoded.append(seq)
-            return decoded
+            if return_log_probs:
+                return log_probs  # Shape: (B, T, vocab_size)
+            else:
+                preds = log_probs.argmax(dim=2)
+                decoded = []
+                for b in range(x.shape[0]):
+                    seq = []
+                    prev = -1
+                    for t in range(input_lengths[b]):
+                        current = preds[b, t].item()
+                        if current != self.blank and current != prev:
+                            seq.append(current)
+                        prev = current if current != self.blank else prev
+                    decoded.append(seq)
+                return decoded
 
 # Example Usage
 if __name__ == "__main__":
