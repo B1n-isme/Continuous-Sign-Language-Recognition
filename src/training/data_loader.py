@@ -12,21 +12,23 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from src.training.csl_dataset import CSLDataset, collate_fn
 from src.training.split_data import get_unique_sequences, split_sequences, get_file_list
 from src.utils.label_utils import load_labels, build_vocab
+from src.utils.config_loader import load_config
 
 if __name__ == "__main__":
-    # Paths
-    processed_dir = "data/processed"
-    labels_csv = "data/labels.csv"
-    datasets_dir = "data/datasets"
 
-    # Create datasets directory if it doesn't exist
+    # Load config
+    config = load_config("configs/data_config.yaml")
+    processed_dir = config['paths']['processed']
+    labels_csv = config['paths']['labels']
+    datasets_dir = config['paths']['datasets']
     os.makedirs(datasets_dir, exist_ok=True)
+    mapping_dir = config['paths']['mapping']
 
     # Load labels and build vocabulary
     label_dict = load_labels(labels_csv)
     # print(label_dict)
     vocab = build_vocab(label_dict)
-    with open('data/label-idx-mapping.json', 'w') as f:
+    with open(mapping_dir, 'w') as f:
         json.dump(vocab, f, indent=4)
 
     # print(vocab)

@@ -243,13 +243,11 @@ def check_crop_value_range(crops):
 
 
 def main():
-    file_path = "data/processed/Hello-I-Have-Good-Lunch_1dqXkE_original.npz"
+    file_path = "data/processed/I_1duAo-_frame_dropped.npz"
     data = load_npz_file(file_path)
     display_npz_info(data)
 
     # check_crop_value_range(data["crops"])
-
-
 
     # Use animated visualization with all valid frames, 0.2 second pause
     visualize_sample(data, animated=True, pause_time=0.2)

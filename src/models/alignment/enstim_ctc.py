@@ -11,9 +11,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class RadialEnStimCTC(nn.Module):
+class EnStimCTC(nn.Module):
     def __init__(self, vocab_size, context_dim, blank=0, lambda_entropy=0.1, kernel_size=5, sigma=1.0, device='cpu'):
-        super(RadialEnStimCTC, self).__init__()
+        super(EnStimCTC, self).__init__()
         self.device = torch.device(device)
         self.blank = blank
         self.lambda_entropy = lambda_entropy
@@ -128,7 +128,7 @@ if __name__ == "__main__":
     input_lengths = torch.tensor([191, 191, 191, 191], dtype=torch.long).to(device)
     target_lengths = torch.tensor([4, 4, 4, 4], dtype=torch.long).to(device)
     
-    model = RadialEnStimCTC(vocab_size=vocab_size, context_dim=256, blank=0, lambda_entropy=0.1, 
+    model = EnStimCTC(vocab_size=vocab_size, context_dim=256, blank=0, lambda_entropy=0.1, 
                             kernel_size=5, sigma=1.0, device=device)
     loss = model(x, targets, input_lengths, target_lengths)
     print(f"RadialEnStimCTC Loss: {loss.item():.4f}")

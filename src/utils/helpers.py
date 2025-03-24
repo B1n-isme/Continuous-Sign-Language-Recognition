@@ -49,43 +49,55 @@ def get_bounding_box(landmarks, width, height, margin=20):
     return x_min, y_min, x_max, y_max
 
 
-def resize_preserve_aspect_ratio(image, target_size):
+def resize_preserve_aspect_ratio(
+    image, 
+    target_size,
+    padding_color=(0, 0, 0),  # Configurable padding (BGR format)
+    interpolation=cv2.INTER_LINEAR  # Better for upscaling
+):
     """
-    Resize image while preserving aspect ratio, then pad to target size.
+    Resize BGR image while preserving aspect ratio, padding with specified color.
 
     Args:
-        image: Input image (numpy array)
-        target_size: Desired output size as (width, height)
+        image: Input BGR image (numpy array, 3 channels)
+        target_size: Desired output size (width, height)
+        padding_color: BGR tuple for padding (default: black)
+        interpolation: Interpolation method for resizing
 
     Returns:
-        Resized and padded image
+        Resized and padded BGR image
     """
     target_width, target_height = target_size
     height, width = image.shape[:2]
 
-    # Calculate the ratio of the target dimensions to the original dimensions
+    # Calculate scaling ratio
     width_ratio = target_width / width
     height_ratio = target_height / height
-
-    # Use the smaller ratio to ensure the image fits within the target dimensions
     ratio = min(width_ratio, height_ratio)
 
-    # Calculate new dimensions
+    # Compute new dimensions
     new_width = int(width * ratio)
     new_height = int(height * ratio)
 
-    # Resize the image
-    resized = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    # Resize with appropriate interpolation
+    resized = cv2.resize(
+        image, 
+        (new_width, new_height), 
+        interpolation=interpolation if ratio < 1 else cv2.INTER_LINEAR
+    )
 
-    # Create a black canvas of the target size
-    canvas = np.zeros((target_height, target_width, 3), dtype=np.uint8)
+    # Create a canvas with the target size and padding color
+    canvas = np.full((target_height, target_width, 3), padding_color, dtype=np.uint8)
 
-    # Calculate offsets to center the image
+    # Calculate padding offsets (centered)
     x_offset = (target_width - new_width) // 2
     y_offset = (target_height - new_height) // 2
 
-    # Place the resized image on the canvas
-    canvas[y_offset : y_offset + new_height, x_offset : x_offset + new_width] = resized
+    # Place resized image on canvas
+    canvas[
+        y_offset : y_offset + new_height,
+        x_offset : x_offset + new_width
+    ] = resized
 
     return canvas
 

@@ -1,7 +1,7 @@
-import numpy as np
-import pandas as pd
 import os
 import glob
+import numpy as np
+import pandas as pd
 from scipy.interpolate import interp1d
 
 from skeletal_aug import (
@@ -12,9 +12,11 @@ from skeletal_aug import (
     add_gaussian_noise_skeletal,
     frame_drop_skeletal,
     scale_skeletal,
+    shear_skeletal,
 )
 from crop_aug import normalize_crops, scale_crops, rotate_crops, occlude_fingers_crops
 from flow_aug import normalize_optical_flow
+from src.utils.config_loader import load_config
 
 
 def align_and_preprocess_modalities(
@@ -118,6 +120,7 @@ def generate_variants(skeletal_data):
         ("warped_fast", time_warp_skeletal(cleaned_skeletal, 0.8)),
         ("noisy", add_gaussian_noise_skeletal(cleaned_skeletal, 0.01)),
         ("frame_dropped", frame_drop_skeletal(cleaned_skeletal, 0.1)),
+        ("sheared", shear_skeletal(cleaned_skeletal)),
     ]
 
     return variants
@@ -165,24 +168,63 @@ def process_file(file_path, output_dir):
 
 def main():
     """Main function to process all raw data files."""
-    output_dir = "data/processed"
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
+    config = load_config("configs/data_config.yaml")
 
-    # Get all .npz files in the raw data directory
-    raw_files = glob.glob("data/raw/*.npz")
+    raw_dir = config["paths"]["raw_data"]
+    raw_files = glob.glob(os.path.join(raw_dir, "*.npz"))
+    processed_dir = config["paths"]["processed"]
+    os.makedirs(processed_dir, exist_ok=True)
+    labels_dir = config["paths"]["labels"]
+
 
     if not raw_files:
-        print("No .npz files found in data/raw/ directory.")
+        print(f"No .npz files found in {raw_dir} directory.")
         return
 
     print(f"Found {len(raw_files)} files to process.")
 
     # Process each file
     for file_path in raw_files:
-        process_file(file_path, output_dir)
+        process_file(file_path, processed_dir)
 
     print("All files processed successfully.")
+
+    # List to hold data
+    data = []
+
+    # List files directly in the processed directory (no subdirectories)
+    files = [f for f in os.listdir(processed_dir) if f.endswith(".npz")]
+
+    # Initialize an accumulator for all labels
+    all_labels = []
+
+    for file in files:
+        processed_file_path = os.path.join(processed_dir, file)
+        raw_data = np.load(processed_file_path)
+        labels = raw_data["labels"]
+
+        # Create the original labels string for this file
+        labels_str = ",".join(str(l) for l in labels)
+
+        # Append the current file's labels to the accumulator
+        all_labels.extend(labels)
+
+        # Append file data with original labels_str to data list
+        data.append({"file_path": processed_file_path, "labels": labels_str})
+
+    # Remove duplicate labels while preserving order
+    unique_labels = list(dict.fromkeys(all_labels))
+    unique_labels_str = ",".join(str(l) for l in unique_labels)
+
+    # Print the unique labels across all files
+    print("Unique labels across all files:", unique_labels_str)
+
+    # Create DataFrame
+    df = pd.DataFrame(data)
+
+    # Save to CSV
+    df.to_csv(labels_dir, index=False)
+    print(f"Saved label mappings to {labels_dir}")
 
 
 if __name__ == "__main__":

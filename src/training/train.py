@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import os
@@ -13,6 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from src.models.model import CSLRModel  # Your CSLR model definition
 from src.training.csl_dataset import CSLDataset, collate_fn  # Dataset and collation utilities
 from src.utils.label_utils import build_vocab, load_labels  # Vocabulary utilities
+from src.utils.config_loader import load_config
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -24,19 +24,32 @@ logging.info(f"Using device: {device}")
 # Enable DataLoader pin_memory only for CUDA
 pin_memory = True if device.type == "cuda" else False
 
+def decode_targets(targets, target_lengths, idx_to_gloss):
+    """Converts target tensor and lengths to a list of reference sentences."""
+    ref_sentences = []
+    # Split targets into individual sequences based on target_lengths
+    splits = torch.split(targets, target_lengths.cpu().tolist())
+    for seq in splits:
+        # Convert each index to gloss string and join with spaces
+        glosses = [idx_to_gloss[idx.item()] for idx in seq]
+        ref_sentences.append(" ".join(glosses))
+    return ref_sentences
+
 if __name__ == "__main__":
     # Paths and hyperparameters
-    train_dataset_path = "data/datasets/train_dataset.pt"
-    val_dataset_path = "data/datasets/val_dataset.pt"
-    labels_csv = "data/labels.csv"
-    save_dir = "checkpoints/"
-    batch_size = 4
-    num_epochs = 50
-    learning_rate = 1e-3
-    weight_decay = 1e-5
-    patience = 10
-
-    # Create checkpoint directory if it doesn't exist
+    data_config = load_config("configs/data_config.yaml")
+    train_dataset_path = os.path.join(data_config["paths"]["dataset"], "train_dataset.pt")
+    val_dataset_path = os.path.join(data_config["paths"]["dataset"], "val_dataset.pt")
+    labels_csv = os.path.join(data_config["paths"]["labels"])
+    
+    train_config = load_config("configs/train_config.yaml")
+    batch_size = train_config["train"]["batch_size"]
+    learning_rate = train_config["train"]["learning_rate"]
+    weight_decay = train_config["train"]["weight_decay"]
+    num_epochs = train_config["train"]["num_epochs"]
+    patience = train_config["train"]["patience"]
+    num_workers = train_config["train"]["num_workers"]
+    save_dir = train_config["checkpoint"]["save_dir"]
     os.makedirs(save_dir, exist_ok=True)
 
     # Load datasets
@@ -59,7 +72,7 @@ if __name__ == "__main__":
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,  # Handles padding and target tensor creation
-        num_workers=4,
+        num_workers=num_workers,
         drop_last=True,
         pin_memory=pin_memory
     )
@@ -68,7 +81,7 @@ if __name__ == "__main__":
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=4,
+        num_workers=num_workers,
         drop_last=True,
         pin_memory=pin_memory
     )
@@ -107,19 +120,11 @@ if __name__ == "__main__":
         device=device
     ).to(device)
 
-    # Optionally compile the model for performance improvements (PyTorch 2.0+)
-    if device.type == "cuda" and hasattr(torch, "compile"):
-        try:
-            model = torch.compile(model)
-            logging.info("Model compiled with torch.compile for improved performance.")
-        except Exception as e:
-            logging.warning(f"torch.compile failed: {e}")
-
     # Set up the optimizer and learning rate scheduler
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=3, factor=0.5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=patience, factor=0.5)
 
-    best_val_loss = float("inf")
+    best_val_wer = float("inf")
     patience_counter = 0
 
     for epoch in range(num_epochs):
@@ -127,7 +132,6 @@ if __name__ == "__main__":
         model.train()
         train_loss = 0.0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} - Training"):
-            # Move batch data to device
             skeletal = batch["skeletal"].to(device)
             crops = batch["crops"].to(device)
             optical_flow = batch["optical_flow"].to(device)
@@ -140,6 +144,10 @@ if __name__ == "__main__":
                 skeletal, crops, optical_flow, targets, input_lengths, target_lengths
             )
             total_loss.backward()
+
+            # Apply gradient clipping to stabilize training
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+
             optimizer.step()
             train_loss += total_loss.item()
 
@@ -148,6 +156,9 @@ if __name__ == "__main__":
         # Validation Phase
         model.eval()
         val_loss = 0.0
+        all_pred_sentences = []
+        all_ref_sentences = []
+        lm_path = "models/checkpoints/kenlm.binary"
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} - Validation"):
                 skeletal = batch["skeletal"].to(device)
@@ -161,14 +172,33 @@ if __name__ == "__main__":
                 )
                 val_loss += total_loss.item()
 
-        avg_val_loss = val_loss / len(val_loader)
-        logging.info(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+                # Decode predictions for WER computation
+                # predictions = model.decode(skeletal, crops, optical_flow, input_lengths)
+                predictions = model.decode_with_lm(
+                    skeletal, crops, optical_flow, input_lengths,
+                    lm_path=lm_path, beam_size=10, lm_weight=0.5
+                )
+                # predictions is a list of lists of gloss strings for each sample
+                for pred in predictions:
+                    all_pred_sentences.append(" ".join(pred))
+                
+                # Build reference sentences from targets using model.idx_to_gloss
+                ref_sentences = decode_targets(targets, target_lengths, model.idx_to_gloss)
+                all_ref_sentences.extend(ref_sentences)
 
-        # Checkpointing and early stopping
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
+        avg_val_loss = val_loss / len(val_loader)
+        # Compute corpus-level WER over the entire validation set
+        val_wer = wer(" ".join(all_ref_sentences), " ".join(all_pred_sentences))
+        logging.info(
+            f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, "
+            f"Val Loss: {avg_val_loss:.4f}, Val WER: {val_wer:.4f}, LR: {optimizer.param_groups[0]['lr']:.6f}"
+        )
+
+        # Checkpointing and early stopping based on Val WER (lower is better)
+        if val_wer < best_val_wer:
+            best_val_wer = val_wer
             torch.save(model.state_dict(), os.path.join(save_dir, "best_model.pt"))
-            logging.info(f"Saved best model with Val Loss: {best_val_loss:.4f}")
+            logging.info(f"Saved best model with Val WER: {best_val_wer:.4f}")
             patience_counter = 0
         else:
             patience_counter += 1

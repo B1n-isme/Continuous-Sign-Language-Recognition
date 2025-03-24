@@ -7,7 +7,6 @@ from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 import numpy as np
 from tqdm import tqdm
 import logging
-import argparse
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from src.models.model import CSLRModel  # Your CSLR model definition
@@ -41,7 +40,8 @@ def evaluate_model(model, test_loader, idx_to_gloss, device, use_lm=False, lm_pa
             else:
                 pred_sequences = model.decode(skeletal, crops, optical_flow, input_lengths)
 
-            # Split targets into sequences and convert to glosses
+            # Split targets into sequences and convert to gloss strings.
+            # Assumes targets is a 1D concatenated tensor.
             ref_sequences = []
             start = 0
             for length in target_lengths:
@@ -51,39 +51,55 @@ def evaluate_model(model, test_loader, idx_to_gloss, device, use_lm=False, lm_pa
                 ref_sequences.append(seq_glosses)
                 start = end
 
-            # Collect for metrics (no further conversion needed for predictions)
+            # Collect sequences for metrics
             all_predictions.extend(pred_sequences)
             all_references.extend(ref_sequences)
 
-    # Compute metrics
-    method_name = "Beam Search with LM" if use_lm else "Greedy Decoding"
+    # Convert sequences to strings: join tokens with a space.
     all_predictions_str = [' '.join(seq) for seq in all_predictions]
     all_references_str = [' '.join(seq) for seq in all_references]
-    wer_score = wer(all_predictions_str, all_references_str)
+
+    # Compute corpus-level WER: reference first, prediction second.
+    ref_corpus = " ".join(all_references_str)
+    pred_corpus = " ".join(all_predictions_str)
+    wer_score = wer(ref_corpus, pred_corpus)
+
+    # Compute corpus-level BLEU score using tokenized sentences.
     smoothie = SmoothingFunction().method4
-    bleu_score = corpus_bleu([[ref] for ref in all_references], all_predictions, smoothing_function=smoothie)
+    bleu_score = corpus_bleu(
+        [[ref.split()] for ref in all_references_str],
+        [pred.split() for pred in all_predictions_str],
+        smoothing_function=smoothie
+    )
+
+    # Compute Sentence Accuracy: percentage of predictions that exactly match references.
+    exact_matches = sum(
+        1 for pred, ref in zip(all_predictions_str, all_references_str)
+        if pred.strip() == ref.strip()
+    )
+    accuracy = exact_matches / len(all_references_str) if len(all_references_str) > 0 else 0.0
 
     # Log results
+    method_name = "Beam Search with LM" if use_lm else "Greedy Decoding"
     logging.info(f"\nEvaluation Results ({method_name}):")
     logging.info(f"Word Error Rate (WER): {wer_score:.4f}")
     logging.info(f"BLEU Score: {bleu_score:.4f}")
+    logging.info(f"Sentence Accuracy: {accuracy*100:.2f}%")
 
-    # Sample predictions
+    # Log a few sample predictions
     logging.info(f"\nSample Decoded Predictions ({method_name}):")
     for i in range(min(5, len(all_predictions))):
         logging.info(f"Prediction {i+1}: {' '.join(all_predictions[i])}")
         logging.info(f"Reference {i+1}: {' '.join(all_references[i])}")
 
-    return wer_score, bleu_score, None  # Accuracy removed
+    return wer_score, bleu_score, accuracy
 
 if __name__ == "__main__":
-    # Command-line arguments
-    parser = argparse.ArgumentParser(description="Evaluate CSLR model with greedy or beam search decoding")
-    parser.add_argument('--use_lm', action='store_true', help="Use beam search decoding with language model")
-    parser.add_argument('--lm_path', type=str, default="models/checkpoints/kenlm.binary", help="Path to KenLM binary file")
-    parser.add_argument('--beam_size', type=int, default=10, help="Beam size for beam search")
-    parser.add_argument('--lm_weight', type=float, default=0.5, help="Language model weight for beam search")
-    args = parser.parse_args()
+    # Static configuration for evaluation
+    use_lm = False  # Set to True to use beam search decoding with LM
+    lm_path = "models/checkpoints/kenlm.binary"  # Path to KenLM binary file
+    beam_size = 10
+    lm_weight = 0.5
 
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -171,17 +187,19 @@ if __name__ == "__main__":
 
     # Evaluate with greedy decoding
     logging.info("\nStarting evaluation with greedy decoding...")
-    greedy_wer, greedy_bleu, _ = evaluate_model(model, test_loader, idx_to_gloss, device, use_lm=False)
+    greedy_wer, greedy_bleu, greedy_accuracy = evaluate_model(
+        model, test_loader, idx_to_gloss, device, use_lm=False
+    )
 
-    # Evaluate with beam search decoding if requested
-    if args.use_lm:
+    # Evaluate with beam search decoding if enabled in the static configuration
+    if use_lm:
         logging.info("\nStarting evaluation with beam search decoding...")
-        lm_wer, lm_bleu, _ = evaluate_model(
+        lm_wer, lm_bleu, lm_accuracy = evaluate_model(
             model, test_loader, idx_to_gloss, device,
-            use_lm=True, lm_path=args.lm_path, beam_size=args.beam_size, lm_weight=args.lm_weight
+            use_lm=True, lm_path=lm_path, beam_size=beam_size, lm_weight=lm_weight
         )
 
         # Compare results
         logging.info("\nComparison of Decoding Methods:")
-        logging.info(f"Greedy Decoding - WER: {greedy_wer:.4f}, BLEU: {greedy_bleu:.4f}")
-        logging.info(f"Beam Search with LM - WER: {lm_wer:.4f}, BLEU: {lm_bleu:.4f}")
+        logging.info(f"Greedy Decoding - WER: {greedy_wer:.4f}, BLEU: {greedy_bleu:.4f}, Accuracy: {greedy_accuracy*100:.2f}%")
+        logging.info(f"Beam Search with LM - WER: {lm_wer:.4f}, BLEU: {lm_bleu:.4f}, Accuracy: {lm_accuracy*100:.2f}%")

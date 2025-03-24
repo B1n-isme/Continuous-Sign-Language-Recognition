@@ -6,14 +6,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchaudio.models.decoder import ctc_decoder
 
-# from src.models.spatial_encoding.spatial_encoding import SpatialEncoding
-# from src.models.temporal_encoding.tempconv import TemporalEncoding
-# from src.models.sequence_learning.transformer import TransformerSequenceLearning
-# from src.models.alignment.enstim_ctc import EnStimCTC
-from spatial_encoding.spatial_encoding import SpatialEncoding
-from temporal_encoding.tempconv import TemporalEncoding
-from sequence_learning.transformer import TransformerSequenceLearning
-from alignment.enstim_ctc import EnStimCTC
+from src.models.spatial_encoding.spatial_encoding import SpatialEncoding
+from src.models.temporal_encoding.tempconv import TemporalEncoding
+from src.models.sequence_learning.transformer import TransformerSequenceLearning
+from src.models.alignment.enstim_ctc import EnStimCTC
+# from spatial_encoding.spatial_encoding import SpatialEncoding
+# from temporal_encoding.tempconv import TemporalEncoding
+# from sequence_learning.transformer import TransformerSequenceLearning
+# from alignment.enstim_ctc import EnStimCTC
 
 
 class CSLRModel(nn.Module):

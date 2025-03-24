@@ -1,3 +1,4 @@
+import os
 import sys
 import cv2
 import numpy as np
@@ -16,13 +17,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
 import mediapipe as mp
-import os
 import time
 
 # Custom utilities and optical flow
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
 from utils.helpers import get_bounding_box, resize_preserve_aspect_ratio, to_base64
 from input_modalities.optical_farneback import compute_optical_flow
+from src.utils.config_loader import load_config
 
 # Initialize MediaPipe Hands (global to avoid re-instantiation)
 mp_hands = mp.solutions.hands
@@ -34,12 +35,19 @@ hands_detector = mp_hands.Hands(
 )
 mp_drawing = mp.solutions.drawing_utils
 
+# Load configuration
+config = load_config("configs/data_config.yaml")
+
+# Data directory
+data_dir = config["paths"]["raw_data"]
+os.makedirs(data_dir, exist_ok=True)
+
 # Global constants
-MAX_HANDS = 2         # Maximum number of hands to detect
-NUM_LANDMARKS = 21    # MediaPipe hand has 21 landmarks
-NUM_COORDS = 3        # x, y, z coordinates
-CROP_SIZE = (112, 112)  # Resize dimension for cropped hands
-CROP_MARGIN = 40      # Margin for better hand context
+MAX_HANDS = config["hand_landmarks"]["max_hands"]
+NUM_LANDMARKS = config["hand_landmarks"]["num_landmarks"]
+NUM_COORDS = config["hand_landmarks"]["num_coords"]
+CROP_SIZE = config["crops"]["crop_size"]
+CROP_MARGIN = config["crops"]["crop_margin"]
 
 # Debug flag (set False in production)
 DEBUG_DRAWING = False
@@ -382,12 +390,11 @@ class SignLanguageCapture(QMainWindow):
         gloss_label = "-".join(g.replace("/", "_").replace("\\", "_") for g in glosses)
         unix_timestamp = int(time.time())
         timestamp = to_base64(unix_timestamp)
-        data_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data",
-            "raw",
-        )
-        os.makedirs(data_dir, exist_ok=True)
+        # data_dir = os.path.join(
+        #     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        #     "data",
+        #     "raw",
+        # )
         output_file = os.path.join(data_dir, f"{gloss_label}_{timestamp}.npz")
 
         try:

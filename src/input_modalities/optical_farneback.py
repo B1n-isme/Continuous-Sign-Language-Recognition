@@ -1,22 +1,26 @@
 import cv2
 import numpy as np
+from src.utils.config_loader import load_config
 
-# Constants
-MAX_HANDS = 2
-CROP_SIZE = (112, 112)
+# Load configuration
+config = load_config("configs/data_config.yaml")
+
+# Global constants
+MAX_HANDS = config["hand_landmarks"]["max_hands"]
+CROP_SIZE = config["crops"]["crop_size"]
 
 def compute_optical_flow(crops):
     """
     Compute Farneback optical flow from RGB crops.
     
     Args:
-        crops: np.ndarray of shape (num_frames, num_hands, 112, 112, 3)
+        crops: np.ndarray of shape (num_frames, num_hands, width, height, 3)
     
     Returns:
-        flow: np.ndarray of shape (num_frames-1, num_hands, 112, 112, 2)
+        flow: np.ndarray of shape (num_frames-1, num_hands, width, height, 2)
     """
     num_frames = crops.shape[0]
-    flow = np.zeros((num_frames-1, MAX_HANDS, 112, 112, 2), dtype=np.float32)
+    flow = np.zeros((num_frames-1, MAX_HANDS, CROP_SIZE[0], CROP_SIZE[1], 2), dtype=np.float32)
 
     for hand_idx in range(MAX_HANDS):
         # Process each hand's sequence
@@ -46,7 +50,7 @@ def compute_optical_flow(crops):
 if __name__ == "__main__":
     # Load your .npz file
     data = np.load("data/raw/recording_20250310_201930.npz", allow_pickle=True)
-    crops = data["crops"]  # (105, 2, 112, 112, 3)
+    crops = data["crops"]  # (105, 2, width, height, 3)
     skeletal_data = data["skeletal_data"]
     labels = data["labels"]
 

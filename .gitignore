@@ -36,3 +36,5 @@ __pycache__/
 *.xlsx
 *.zip
 *.gz
+*.task
+*.env

@@ -18,6 +18,9 @@ from PyQt5.QtGui import QImage, QPixmap
 import mediapipe as mp
 
 from src.utils.helpers import get_bounding_box, resize_preserve_aspect_ratio
+from src.feature_extraction.skeletal_aug import interpolate_skeletal, smooth_skeletal_ema
+from src.feature_extraction.crop_aug import normalize_crops
+from src.feature_extraction.flow_aug import normalize_optical_flow
 from src.models.model import CSLRModel
 from src.input_modalities.optical_farneback import compute_optical_flow
 
@@ -274,6 +277,7 @@ class CSLRWindow(QMainWindow):
             temporal_params,
             transformer_params,
             enstim_params,
+            label_mapping_path="data/label-idx-mapping.json",
             device=self.device,
         ).to(self.device)
         checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=True)
@@ -348,21 +352,35 @@ class CSLRWindow(QMainWindow):
             else:
                 optical_flow_padded = optical_flow_array
 
+            # --- Normalization / Preprocessing Steps for Inference ---
+            # For skeletal data: apply deterministic cleaning (interpolation and smoothing)
+            skeletal_normalized = smooth_skeletal_ema(interpolate_skeletal(skeletal_array))
+
+            # For cropped images: normalize pixel values to [0, 1]
+            crops_normalized = normalize_crops(crops_array)
+
+            # For optical flow: normalize the flow vectors
+            optical_flow_normalized = normalize_optical_flow(optical_flow_padded)
+
             # Convert to tensors and add batch dimension
-            skeletal_tensor = torch.tensor(skeletal_array, dtype=torch.float32).to(self.device).unsqueeze(0)  # (1, T, 2, 21, 3)
+            skeletal_tensor = torch.tensor(skeletal_normalized, dtype=torch.float32).to(self.device).unsqueeze(0)  # (1, T, 2, 21, 3)
             crops_tensor = (
-                torch.tensor(crops_array / 255.0, dtype=torch.float32)
+                torch.tensor(crops_normalized / 255.0, dtype=torch.float32)
                 .permute(0, 1, 4, 2, 3)
                 .to(self.device)
                 .unsqueeze(0)  # (1, T, 2, 3, 112, 112)
             )
-            optical_flow_tensor = torch.tensor(optical_flow_padded, dtype=torch.float32).to(self.device).unsqueeze(0)  # (1, T, 2, 2, 112, 112)
+            optical_flow_tensor = torch.tensor(optical_flow_normalized, dtype=torch.float32).to(self.device).unsqueeze(0)  # (1, T, 2, 2, 112, 112)
             input_lengths = torch.tensor([sequence_length], dtype=torch.long).to(self.device)
+
+            lm_path = "models/checkpoints/kenlm.binary" 
 
             # Model inference
             with torch.no_grad():
-                pred_sequences = self.model.decode(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths)
-                pred_glosses = " ".join([self.idx_to_gloss[idx] for idx in pred_sequences[0]])
+                # pred_sequences = self.model.decode(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths)
+                pred_sequences = self.model.decode_with_lm(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths, lm_path=lm_path, beam_size=10, lm_weight=0.5)
+                # pred_glosses = " ".join([self.idx_to_gloss[idx] for idx in pred_sequences[0]])
+                pred_glosses = " ".join(pred_sequences[0])
                 self.prediction_label.setText(f"Prediction: {pred_glosses}")
         else:
             self.prediction_label.setText("Prediction: Sequence too short")
