@@ -20,9 +20,9 @@ import mediapipe as mp
 import time
 
 # Custom utilities and optical flow
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../")))
-from utils.helpers import get_bounding_box, resize_preserve_aspect_ratio, to_base64
-from input_modalities.optical_farneback import compute_optical_flow
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from src.utils.helpers import get_bounding_box, resize_preserve_aspect_ratio, to_base64
+from src.input_modalities.optical_farneback import compute_optical_flow
 from src.utils.config_loader import load_config
 
 # Initialize MediaPipe Hands (global to avoid re-instantiation)

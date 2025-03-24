@@ -1,5 +1,6 @@
 # labels_utils.py
 import pandas as pd
+import torch
 
 def load_labels(csv_path):
     """Loads labels.csv into a dictionary: {file_path: [label1, label2, ...]}"""
@@ -36,3 +37,12 @@ def build_vocab(label_dict):
         vocab[word] = idx
 
     return vocab
+
+def decode_targets(targets, target_lengths, idx_to_gloss):
+    """Converts target tensor and lengths to a list of reference sentences."""
+    ref_sentences = []
+    splits = torch.split(targets, target_lengths.cpu().tolist())
+    for seq in splits:
+        glosses = [idx_to_gloss[idx.item()] for idx in seq]
+        ref_sentences.append(" ".join(glosses))
+    return ref_sentences

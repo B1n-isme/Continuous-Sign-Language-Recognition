@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import json
 import torch
@@ -6,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchaudio.models.decoder import ctc_decoder
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from src.models.spatial_encoding.spatial_encoding import SpatialEncoding
 from src.models.temporal_encoding.tempconv import TemporalEncoding
 from src.models.sequence_learning.transformer import TransformerSequenceLearning
@@ -14,6 +16,8 @@ from src.models.alignment.enstim_ctc import EnStimCTC
 # from temporal_encoding.tempconv import TemporalEncoding
 # from sequence_learning.transformer import TransformerSequenceLearning
 # from alignment.enstim_ctc import EnStimCTC
+
+from src.utils.config_loader import load_config
 
 
 class CSLRModel(nn.Module):
@@ -125,32 +129,19 @@ class CSLRModel(nn.Module):
 
 # Example usage:
 if __name__ == "__main__":
+
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vocab_size = 14  # 13 glosses + 1 blank
 
-    # Define module parameter dictionaries
-    spatial_params = {"D_spatial": 128}
-    temporal_params = {
-        "in_channels": 128,
-        "out_channels": 256,
-        "kernel_sizes": [3, 5, 7],
-        "dilations": [1, 2, 4],
-        "vocab_size": vocab_size
-    }
-    transformer_params = {
-        "input_dim": 2 * 256,
-        "model_dim": 256,
-        "num_heads": 4,
-        "num_layers": 2,
-        "vocab_size": vocab_size,
-        "dropout": 0.1
-    }
-    enstim_params = {
-        "vocab_size": vocab_size,
-        "context_dim": 256,
-        "blank": 0,
-        "lambda_entropy": 0.1
-    }
+    model_config = load_config("configs/model_config.yaml")
+    spatial_params = model_config["spatial_params"]
+    model_config["temporal_params"]["vocab_size"] = vocab_size
+    temporal_params = model_config["temporal_params"]
+    model_config["transformer_params"]["vocab_size"] = vocab_size
+    transformer_params = model_config["transformer_params"]
+    model_config["enstim_params"]["vocab_size"] = vocab_size
+    enstim_params = model_config["enstim_params"]
     
     # Instantiate the model with JSON mapping
     label_mapping_path = "data/label-idx-mapping.json"
@@ -166,9 +157,9 @@ if __name__ == "__main__":
     # Greedy decoding (original)
     decoded_greedy = model.decode(skeletal, crops, optical_flow, input_lengths)
     print(f"Greedy Decoded (indices): {decoded_greedy}")
-    print(f"Greedy Decoded (glosses): {' '.join([model.idx_to_gloss[idx] for idx in decoded_greedy[0]])}")
+    # print(f"Greedy Decoded (glosses): {' '.join([model.idx_to_gloss[idx] for idx in decoded_greedy[0]])}")
     
-    # Beam search decoding with LM
-    lm_path = "models\checkpoints\kenlm.binary"  # Replace with actual path to your KenLM binary file
-    decoded_beam = model.decode_with_lm(skeletal, crops, optical_flow, input_lengths, lm_path=lm_path, beam_size=10)
-    print(f"Beam Decoded (glosses): {' '.join(decoded_beam[0])}")
+    # # Beam search decoding with LM
+    # lm_path = "models\checkpoints\kenlm.binary"  # Replace with actual path to your KenLM binary file
+    # decoded_beam = model.decode_with_lm(skeletal, crops, optical_flow, input_lengths, lm_path=lm_path, beam_size=10)
+    # print(f"Beam Decoded (glosses): {' '.join(decoded_beam[0])}")

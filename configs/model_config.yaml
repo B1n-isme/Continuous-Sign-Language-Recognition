@@ -1,0 +1,36 @@
+lm_params:
+  beam_size: 10
+  weight: 0.5
+
+train_params:
+  batch_size: 32
+  num_epochs: 50
+  patience: 10
+
+optimize_params:
+  learning_rate: 1e-3
+  weight_decay: 1e-5
+
+sys_params:
+  num_workers: 4
+
+checkpoint:
+  path: "models/checkpoints"
+
+spatial_params:
+  D_spatial: 128
+temporal_params:
+  in_channels: 128
+  out_channels: 256
+  kernel_sizes: [3,5,7]
+  dilations: [1,2,4]
+transformer_params:
+  input_dim: 512
+  model_dim: 256
+  num_heads: 4
+  num_layers: 2
+  dropout: 0.1
+enstim_params:
+  context_dim: 256
+  blank: 0
+  lambda_entropy: 0.1

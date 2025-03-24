@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 from torch.utils.data import DataLoader
+from torch.amp import autocast, GradScaler
 from jiwer import wer  # For Word Error Rate
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 import numpy as np
@@ -12,6 +13,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from src.models.model import CSLRModel  # Your CSLR model definition
 from src.training.csl_dataset import CSLDataset, collate_fn  # Dataset and collation utilities
 from src.utils.label_utils import build_vocab, load_labels  # Vocabulary utilities
+from src.utils.config_loader import load_config
+from src.utils.label_utils import decode_targets
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -32,24 +35,17 @@ def evaluate_model(model, test_loader, idx_to_gloss, device, use_lm=False, lm_pa
             target_lengths = batch['target_lengths'].to(device)
 
             # Decode predictions (both return gloss strings)
-            if use_lm:
-                pred_sequences = model.decode_with_lm(
-                    skeletal, crops, optical_flow, input_lengths,
-                    lm_path=lm_path, beam_size=beam_size, lm_weight=lm_weight
-                )
-            else:
-                pred_sequences = model.decode(skeletal, crops, optical_flow, input_lengths)
+            with autocast():
+                if use_lm:
+                    pred_sequences = model.decode_with_lm(
+                        skeletal, crops, optical_flow, input_lengths,
+                        lm_path=lm_path, beam_size=beam_size, lm_weight=lm_weight
+                    )
+                else:
+                    pred_sequences = model.decode(skeletal, crops, optical_flow, input_lengths)
 
             # Split targets into sequences and convert to gloss strings.
-            # Assumes targets is a 1D concatenated tensor.
-            ref_sequences = []
-            start = 0
-            for length in target_lengths:
-                end = start + length.item()
-                seq_indices = targets[start:end].tolist()
-                seq_glosses = [idx_to_gloss[idx] for idx in seq_indices]
-                ref_sequences.append(seq_glosses)
-                start = end
+            ref_sequences = decode_targets(targets, target_lengths, model.idx_to_gloss)
 
             # Collect sequences for metrics
             all_predictions.extend(pred_sequences)
@@ -95,22 +91,23 @@ def evaluate_model(model, test_loader, idx_to_gloss, device, use_lm=False, lm_pa
     return wer_score, bleu_score, accuracy
 
 if __name__ == "__main__":
-    # Static configuration for evaluation
-    use_lm = False  # Set to True to use beam search decoding with LM
-    lm_path = "models/checkpoints/kenlm.binary"  # Path to KenLM binary file
-    beam_size = 10
-    lm_weight = 0.5
+    # Load configuration
+    use_lm=False
+    model_config = load_config("configs/model_config.yaml")
+    lm_path = os.path.join(model_config["checkpoint"]["path"], "kenlm.binary")
+    beam_size = model_config["lm_params"]["beam_size"]
+    lm_weight = model_config["lm_params"]["weight"]
+    data_config = load_config("configs/data_config.yaml")
+    test_dataset_path = os.path.join(data_config["paths"]["dataset"], "test_dataset.pt")
+    labels_csv = data_config["paths"]["labels"]
+    checkpoint_path = model_config["checkpoint"]["path"]
+    label_mapping_path = data_config["paths"]["mapping"]
+    batch_size = model_config["train_params"]["batch_size"]
+    num_workers = model_config["sys_params"]["num_workers"]
 
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logging.info(f"Using device: {device}")
-
-    # Paths and hyperparameters
-    test_dataset_path = "data/datasets/test_dataset.pt"
-    labels_csv = "data/labels.csv"
-    checkpoint_path = "checkpoints/best_model.pt"
-    label_mapping_path = "data/label-idx-mapping.json"
-    batch_size = 4
 
     # Load test dataset
     try:
@@ -134,34 +131,19 @@ if __name__ == "__main__":
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=2,
+        num_workers=num_workers,
         drop_last=True
     )
     logging.info("Successfully loaded test dataset and created DataLoader!")
 
     # Model parameters
-    spatial_params = {"D_spatial": 128}
-    temporal_params = {
-        "in_channels": 128,
-        "out_channels": 256,
-        "kernel_sizes": [3, 5, 7],
-        "dilations": [1, 2, 4],
-        "vocab_size": vocab_size
-    }
-    transformer_params = {
-        "input_dim": 2 * 256,
-        "model_dim": 256,
-        "num_heads": 4,
-        "num_layers": 2,
-        "vocab_size": vocab_size,
-        "dropout": 0.1
-    }
-    enstim_params = {
-        "vocab_size": vocab_size,
-        "context_dim": 256,
-        "blank": 0,
-        "lambda_entropy": 0.1
-    }
+    spatial_params = model_config["spatial_params"]
+    model_config["temporal_params"]["vocab_size"] = vocab_size
+    temporal_params = model_config["temporal_params"]
+    model_config["transformer_params"]["vocab_size"] = vocab_size
+    transformer_params = model_config["transformer_params"]
+    model_config["enstim_params"]["vocab_size"] = vocab_size
+    enstim_params = model_config["enstim_params"]
 
     # Initialize and load model
     model = CSLRModel(

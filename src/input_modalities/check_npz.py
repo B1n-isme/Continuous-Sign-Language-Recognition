@@ -243,7 +243,7 @@ def check_crop_value_range(crops):
 
 
 def main():
-    file_path = "data/processed/I_1duAo-_frame_dropped.npz"
+    file_path = "data/raw/Hello_1duGL_.npz"
     data = load_npz_file(file_path)
     display_npz_info(data)
 

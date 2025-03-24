@@ -171,21 +171,24 @@ class SpatialEncoding(nn.Module):
         self.graph_layer2 = GraphConvLayer(32, 32, A, device)  # 32 -> 32
         
         # CNNs for RGB and Optical Flow (using MobileNet V3 Small)
-        self.cnn_rgb = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
-        # self.cnn_rgb = models.mobilenet_v3_small(weights=None)
-        # state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
-        # self.cnn_rgb.load_state_dict(state_dict)
-        self.cnn_rgb.eval()
+        # self.cnn_rgb = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
+        self.cnn_rgb = models.mobilenet_v3_small(weights=None)
+        state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
+        self.cnn_rgb.load_state_dict(state_dict)
+        # Freeze RGB branch completely
+        for param in self.cnn_rgb.parameters():
+            param.requires_grad = False
+        self.cnn_rgb.eval()  # Freeze BN stats and disable dropout
 
-        self.cnn_flow = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
-        # self.cnn_flow = models.mobilenet_v3_small(weights=None)
-        # state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
-        # self.cnn_flow.load_state_dict(state_dict)
-        self.cnn_flow.eval()
+        # self.cnn_flow = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
+        self.cnn_flow = models.mobilenet_v3_small(weights=None)
+        state_dict = torch.load("D:/Data/mobilenet_v3_small-047dcff4.pth", map_location=self.device)
+        self.cnn_flow.load_state_dict(state_dict)
+        self.cnn_flow.train()
 
 
-        # Adjust first conv layer for optical flow (2 channels)
-        self.cnn_flow.features[0][0] = nn.Conv2d(2, 16, kernel_size=3, stride=2, padding=1, bias=False)
+        # # Adjust first conv layer for optical flow (2 channels)
+        # self.cnn_flow.features[0][0] = nn.Conv2d(2, 16, kernel_size=3, stride=2, padding=1, bias=False)
         
         # Define CNN blocks: first and second blocks for each modality
         self.first_block_rgb = nn.Sequential(*self.cnn_rgb.features[:2])  # Outputs 16 channels
@@ -219,6 +222,13 @@ class SpatialEncoding(nn.Module):
         skeletal_flat = skeletal.reshape(B*T*2, 21, 3).to(self.device)
         crops_flat = crops.reshape(B*T*2, 3, 112, 112).to(self.device)
         flow_flat = optical_flow.reshape(B*T*2, 2, 112, 112).to(self.device)
+        
+        # Stack flow channels with zero-padding to make 3 channels
+        # (B*T*2, 2, H, W) -> (B*T*2, 3, H, W)
+        flow_flat = torch.cat([
+            flow_flat,
+            torch.zeros_like(flow_flat[:, :1])  # Add zero channel
+        ], dim=1)
         
         # Normalize RGB inputs
         crops_flat = (crops_flat - self.rgb_mean) / self.rgb_std
