@@ -39,7 +39,7 @@ def split_sequences(sequences, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1, s
     test_seq = sequences[val_end:]
     return train_seq, val_seq, test_seq
 
-def get_file_list(processed_dir, sequences, variants=['original', 'noisy', 'rotated_15', 'rotated_-15', 'warped_slow', 'warped_fast', 'frame_dropped']):
+def get_file_list(processed_dir, sequences, variants=['original', 'noisy', 'rotated_15', 'rotated_-15', 'warped_slow', 'warped_fast', 'frame_dropped', 'sheared']):
     """Gets all variant files for given sequences."""
     file_list = []
     for seq in sequences:
