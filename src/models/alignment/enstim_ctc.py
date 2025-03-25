@@ -27,7 +27,9 @@ class EnStimCTC(nn.Module):
 
         # Existing context convolution and projection
         self.context_conv = nn.Conv1d(vocab_size, context_dim, kernel_size=3, padding=0, bias=False).to(device)
+        nn.init.kaiming_normal_(self.context_conv.weight, nonlinearity='linear')
         self.context_proj = nn.Linear(context_dim, vocab_size).to(device)
+        nn.init.kaiming_normal_(self.context_proj.weight, nonlinearity='linear')
         self.combination_weight = nn.Parameter(torch.tensor(0.5, device=device))
         self.log_softmax = nn.LogSoftmax(dim=2).to(device)
         
@@ -49,6 +51,9 @@ class EnStimCTC(nn.Module):
         input_lengths = input_lengths.to(self.device)
         target_lengths = target_lengths.to(self.device)
 
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            raise ValueError("Input x contains NaN or Inf values!")
+
         if targets.max() >= self.vocab_size or targets.min() < 0:
             raise ValueError(f"Target indices must be in [0, {self.vocab_size - 1}]")
 
@@ -66,6 +71,7 @@ class EnStimCTC(nn.Module):
         smoothed_logits = F.conv1d(combined_logits, self.gaussian_kernel, groups=self.vocab_size, padding=self.padding)
         smoothed_logits = smoothed_logits.transpose(1, 2)  # (B, T, vocab_size)
         
+        smoothed_logits = torch.clamp(smoothed_logits, min=-1e9, max=1e9)  # Avoid NaNs in log_softmax
         log_probs = self.log_softmax(smoothed_logits)
         
         # Optional debugging

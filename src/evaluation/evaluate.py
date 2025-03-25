@@ -10,9 +10,10 @@ from tqdm import tqdm
 import logging
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-from src.models.model import CSLRModel  # Your CSLR model definition
-from src.training.csl_dataset import CSLDataset, collate_fn  # Dataset and collation utilities
-from src.utils.label_utils import build_vocab, load_labels  # Vocabulary utilities
+from src.models.model import CSLRModel  
+from src.models.ema import EMA, get_decay
+from src.training.csl_dataset import CSLDataset, collate_fn
+from src.utils.label_utils import build_vocab, load_labels
 from src.utils.config_loader import load_config
 from src.utils.label_utils import decode_targets
 
@@ -20,7 +21,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-def evaluate_model(model, test_loader, idx_to_gloss, device, use_lm=False, lm_path=None, beam_size=10, lm_weight=0.5):
+def evaluate_model(model, test_loader, device, use_lm=False, lm_path=None, beam_size=10, lm_weight=0.5, ):
     model.eval()
     all_predictions = []
     all_references = []
@@ -158,10 +159,19 @@ if __name__ == "__main__":
     # Load checkpoint
     try:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-        if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['state_dict'])
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
         else:
             model.load_state_dict(checkpoint)
+
+        # Load EMA if available
+        if 'ema_shadow' in checkpoint:
+            ema = EMA(model)
+            ema.shadow = checkpoint['ema_shadow']
+            ema.apply_shadow()
+            if 'ema_decay' in checkpoint:
+                ema.decay = checkpoint['ema_decay']
+
         logging.info(f"Loaded model checkpoint from {checkpoint_path}")
     except Exception as e:
         logging.error(f"Failed to load model checkpoint: {e}")
@@ -170,14 +180,14 @@ if __name__ == "__main__":
     # Evaluate with greedy decoding
     logging.info("\nStarting evaluation with greedy decoding...")
     greedy_wer, greedy_bleu, greedy_accuracy = evaluate_model(
-        model, test_loader, idx_to_gloss, device, use_lm=False
+        model, test_loader, device, use_lm=False
     )
 
     # Evaluate with beam search decoding if enabled in the static configuration
     if use_lm:
         logging.info("\nStarting evaluation with beam search decoding...")
         lm_wer, lm_bleu, lm_accuracy = evaluate_model(
-            model, test_loader, idx_to_gloss, device,
+            model, test_loader, device,
             use_lm=True, lm_path=lm_path, beam_size=beam_size, lm_weight=lm_weight
         )
 

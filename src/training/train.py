@@ -18,6 +18,9 @@ from src.utils.label_utils import build_vocab, load_labels  # Vocabulary utiliti
 from src.utils.config_loader import load_config
 from src.utils.label_utils import decode_targets
 
+torch.cuda.empty_cache()
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -46,6 +49,12 @@ def train_one_epoch(model, train_loader, optimizer, ema, device, grad_accum_step
         targets = batch["targets"].to(device)
         input_lengths = batch["input_lengths"].to(device)
         target_lengths = batch["target_lengths"].to(device)
+
+        # Check dataset for NaN/Inf
+        for name, tensor in batch.items():
+            if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+                logging.error(f"NaN or Inf found in {name}")
+                raise ValueError(f"Invalid values in {name}")
 
         # Mixed precision forward pass
         with autocast():
@@ -206,7 +215,7 @@ if __name__ == "__main__":
     
     # LM configuration for decoding
     lm_path = "models/checkpoints/kenlm.binary"
-    grad_accum_steps = model_config["train_params"].get("grad_accum_steps", 4)
+    grad_accum_steps = model_config["train_params"]["grad_accum_steps"]
 
     for epoch in range(num_epochs):
         logging.info(f"Starting epoch {epoch+1}/{num_epochs}")
