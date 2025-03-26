@@ -27,12 +27,12 @@ from src.utils.config_loader import load_config
 
 # Initialize MediaPipe Hands (global to avoid re-instantiation)
 mp_hands = mp.solutions.hands
-hands_detector = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=2,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.7,
-)
+# hands_detector = mp_hands.Hands(
+#     static_image_mode=False,
+#     max_num_hands=2,
+#     min_detection_confidence=0.7,
+#     min_tracking_confidence=0.7,
+# )
 mp_drawing = mp.solutions.drawing_utils
 
 # Load configuration
@@ -95,11 +95,20 @@ class FrameCapturingThread(QThread):
 class FrameProcessingThread(QThread):
     # Emit the annotated frame, normalized landmarks, cropped images, and hand-presence flag
     frame_processed = pyqtSignal(np.ndarray, np.ndarray, np.ndarray, bool)
+    processing_error = pyqtSignal(str)
 
     def __init__(self, frame_queue):
         super().__init__()
         self.frame_queue = frame_queue
         self.running = False
+
+        # Initialize MediaPipe Hands instance for this thread
+        self.hands_detector = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=MAX_HANDS,  # Use config value
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7
+        )
 
     def run(self):
         self.running = True
@@ -107,10 +116,18 @@ class FrameProcessingThread(QThread):
             try:
                 # Get the latest frame (dropping older frames)
                 frame = self.frame_queue.get(timeout=0.005)
+                try:
+                        annotated, landmarks_array, crops_array, has_hands = self.process_frame(frame)
+                        self.frame_processed.emit(annotated, landmarks_array, crops_array, has_hands)
+                except Exception as e:
+                    self.processing_error.emit(f"Processing error: {str(e)}")
+                    # Optional: Add stack trace for debugging
+                    import traceback
+                    self.processing_error.emit(traceback.format_exc())
             except queue.Empty:
                 continue
-            annotated, landmarks_array, crops_array, has_hands = self.process_frame(frame)
-            self.frame_processed.emit(annotated, landmarks_array, crops_array, has_hands)
+            except Exception as e:
+                self.processing_error.emit(f"Thread error: {str(e)}")
 
     def process_frame(self, frame):
         # Create copies for processing and (if needed) annotation
@@ -119,7 +136,7 @@ class FrameProcessingThread(QThread):
 
         proc_frame.flags.writeable = False
         rgb_frame = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
-        results = hands_detector.process(rgb_frame)
+        results = self.hands_detector.process(rgb_frame)
         proc_frame.flags.writeable = True
 
         has_hands = (results.multi_hand_landmarks is not None and 
@@ -127,7 +144,7 @@ class FrameProcessingThread(QThread):
 
         # Pre-allocate arrays for landmarks and crops
         landmarks_array = np.zeros((MAX_HANDS, NUM_LANDMARKS, NUM_COORDS), dtype=np.float32)
-        crops_array = np.zeros((MAX_HANDS, *CROP_SIZE, 3), dtype=np.uint8)
+        crops_array = np.zeros((MAX_HANDS, *CROP_SIZE, 3), dtype=np.float32)
 
         if has_hands:
             for hand_idx, (hand_landmarks, handedness) in enumerate(
@@ -168,7 +185,7 @@ class FrameProcessingThread(QThread):
                     [[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark], dtype=np.float32
                 )
                 landmarks -= landmarks[0]  # Translate relative to the wrist
-                ref_length = np.linalg.norm(landmarks[9])  # Use middle finger MCP as reference
+                ref_length = np.linalg.norm(landmarks[9]) + 1e-7  # Use middle finger MCP as reference
                 if ref_length > 0:
                     landmarks /= ref_length
                 z_max = np.max(np.abs(landmarks[:, 2]))
@@ -181,6 +198,7 @@ class FrameProcessingThread(QThread):
     def stop(self):
         self.running = False
         self.wait()
+        self.hands_detector.close()
 
 # -------------------- Data Saving Thread --------------------
 class DataSavingThread(QThread):
@@ -236,6 +254,8 @@ class SignLanguageCapture(QMainWindow):
         self.frame_counter = 0
         self.last_hands_present = False
         self.data_saved = True
+        self.is_saving = False
+        self.processing_thread.processing_error.connect(self.on_processing_error)
 
         # UI Components
         self.video_label = QLabel()
@@ -283,11 +303,17 @@ class SignLanguageCapture(QMainWindow):
         self.gloss_input.clear()
 
     def start_recording(self):
+        if self.is_saving:
+            self.status_label.setText("Cannot start recording during save!")
+            self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+            return False
+        
         glosses = self.get_glosses()
         if not glosses:
             self.status_label.setText("Please enter glosses before recording.")
             self.status_label.setStyleSheet("color: orange; font-weight: bold;")
             return False
+        
         self.is_recording = True
         self.frame_counter = 0
         self.no_hands_counter = 0
@@ -300,6 +326,10 @@ class SignLanguageCapture(QMainWindow):
         return True
 
     def stop_recording(self):
+        if self.is_saving:
+            self.status_label.setText("Save already in progress!")
+            return
+        self.is_saving = True
         self.is_recording = False
         frames_captured = len(self.captured_images)
         self.status_label.setText(f"Recording stopped. {frames_captured} frames captured.")
@@ -314,6 +344,15 @@ class SignLanguageCapture(QMainWindow):
     def get_glosses(self):
         text = self.gloss_input.text().strip()
         return text.split() if text else []
+    
+    def on_processing_error(self, error_msg):
+        self.status_label.setText(f"ERROR: {error_msg}")
+        self.status_label.setStyleSheet("color: red; font-weight: bold;")
+        print(f"Processing Error: {error_msg}")  # Log to console
+
+        # Optional: Stop processing on critical errors
+        if "Fatal" in error_msg:  # Add your own critical error conditions
+            self.processing_thread.stop()
 
     def on_frame_processed(self, annotated_frame, landmarks_array, crops_array, has_hands):
         # Auto-start recording if glosses are provided and hands appear
@@ -416,6 +455,7 @@ class SignLanguageCapture(QMainWindow):
 
     def on_save_completed(self, success, message):
         if success:
+            self.is_saving = False
             self.status_label.setText(message)
             self.status_label.setStyleSheet("color: green; font-weight: bold;")
             self.data_saved = True

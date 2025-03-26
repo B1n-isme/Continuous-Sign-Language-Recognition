@@ -15,57 +15,58 @@ from skeletal_aug import (
     shear_skeletal,
 )
 from crop_aug import normalize_crops, scale_crops, rotate_crops, occlude_fingers_crops
-from flow_aug import normalize_optical_flow
+from flow_aug import normalize_optical_flow, rotate_flow
 from src.utils.config_loader import load_config
 
 
-def align_and_preprocess_modalities(
-    skeletal_variant, crops, optical_flow, variant_name
-):
-    """
-    Align and preprocess different modalities to have the same temporal dimension.
-
-    Args:
-        skeletal_variant (np.ndarray): Skeletal data after augmentation.
-        crops (np.ndarray): Original cropped images.
-        optical_flow (np.ndarray): Original optical flow data.
-        variant_name (str): Name of the augmentation variant.
-
-    Returns:
-        tuple: Aligned and preprocessed crops and optical flow data.
-    """
+def align_and_preprocess_modalities(skeletal_variant, crops, optical_flow, variant_name):
+    """Enhanced alignment with coordinated rotations across modalities."""
     T_new = skeletal_variant.shape[0]
     T_orig = crops.shape[0]
-    old_frames = np.arange(T_orig)
-    new_frames = np.linspace(0, T_orig - 1, T_new)
+    rotation_angle = 0
+    
+    # Parse rotation angle from variant name
+    if "rotated_" in variant_name:
+        try:
+            rotation_angle = int(variant_name.split("_")[1])
+        except (IndexError, ValueError):
+            pass
 
+    # Process crops with coordinated rotation
     crops_normalized = normalize_crops(crops)
-    if "rotated_15" in variant_name:
-        crops_variant = rotate_crops(crops_normalized, 15)
-        crops_variant = scale_crops(crops_variant, 1.2)
-    elif "rotated_-15" in variant_name:
-        crops_variant = rotate_crops(crops_normalized, -15)
-        crops_variant = scale_crops(crops_variant, 0.8)
+    if rotation_angle != 0:
+        crops_variant = rotate_crops(crops_normalized, rotation_angle)
+        # Apply matching scale based on rotation direction
+        scale = 1.2 if rotation_angle > 0 else 0.8
+        crops_variant = scale_crops(crops_variant, scale)
     elif "noisy" in variant_name:
         crops_variant = occlude_fingers_crops(crops_normalized)
     else:
         crops_variant = crops_normalized
 
+    # Temporal alignment for crops
+    old_frames = np.arange(T_orig)
+    new_frames = np.linspace(0, T_orig-1, T_new)
     crops_new = np.zeros((T_new, *crops_variant.shape[1:]), dtype=np.float32)
     for h in range(2):
         for c in range(3):
             interp = interp1d(old_frames, crops_variant[:, h, :, :, c], axis=0)
             crops_new[:, h, :, :, c] = interp(new_frames)
 
+    # Process optical flow with coordinated rotation
     flow_normalized = normalize_optical_flow(optical_flow)
-    T_flow_orig = optical_flow.shape[0]
-    new_flow_frames = np.linspace(0, T_flow_orig - 1, T_new - 1)
-    flow_new = np.zeros((T_new - 1, *flow_normalized.shape[1:]), dtype=np.float32)
+    if rotation_angle != 0:
+        # Rotate flow vectors to match image rotation
+        flow_normalized = np.stack([rotate_flow(flow_normalized[..., i], rotation_angle)
+                                  for i in range(2)], axis=-1)
+
+    # Temporal alignment for optical flow
+    T_flow_orig = flow_normalized.shape[0]
+    new_flow_frames = np.linspace(0, T_flow_orig-1, T_new-1)
+    flow_new = np.zeros((T_new-1, *flow_normalized.shape[1:]), dtype=np.float32)
     for h in range(2):
         for c in range(2):
-            interp = interp1d(
-                np.arange(T_flow_orig), flow_normalized[:, h, :, :, c], axis=0
-            )
+            interp = interp1d(np.arange(T_flow_orig), flow_normalized[:, h, :, :, c], axis=0)
             flow_new[:, h, :, :, c] = interp(new_flow_frames)
 
     return crops_new, flow_new
@@ -91,30 +92,24 @@ def load_data(file_path):
 
 
 def generate_variants(skeletal_data):
-    """
-    Generate different variants of skeletal data.
-
-    Args:
-        skeletal_data (np.ndarray): Original skeletal data.
-
-    Returns:
-        list: List of tuples containing (variant_name, augmented_data).
-    """
+    """Generate variants with explicit rotation parameters."""
     cleaned_skeletal = smooth_skeletal_ema(interpolate_skeletal(skeletal_data))
-
+    
     variants = [
         ("original", cleaned_skeletal),
         (
-            "rotated_15",
+            "rotated_15", 
             rotate_skeletal(
-                scale_skeletal(cleaned_skeletal, np.random.uniform(0.9, 1.1))
-            ),
+                scale_skeletal(cleaned_skeletal, np.random.uniform(0.9, 1.1)),
+                angle_deg=15  # Explicit rotation angle
+            )
         ),
         (
             "rotated_-15",
             rotate_skeletal(
-                scale_skeletal(cleaned_skeletal, np.random.uniform(0.9, 1.1))
-            ),
+                scale_skeletal(cleaned_skeletal, np.random.uniform(0.9, 1.1)),
+                angle_deg=-15  # Explicit rotation angle
+            )
         ),
         ("warped_slow", time_warp_skeletal(cleaned_skeletal, 1.2)),
         ("warped_fast", time_warp_skeletal(cleaned_skeletal, 0.8)),
@@ -122,42 +117,28 @@ def generate_variants(skeletal_data):
         ("frame_dropped", frame_drop_skeletal(cleaned_skeletal, 0.1)),
         ("sheared", shear_skeletal(cleaned_skeletal)),
     ]
-
     return variants
 
 
 def process_file(file_path, output_dir):
-    """
-    Process a single data file and generate augmented variants.
-
-    Args:
-        file_path (str): Path to the data file.
-    """
-    print(f"Processing {os.path.basename(file_path)}...")
-
-    # Load data
+    """Enhanced processing with rotation coordination."""
     skeletal_data, crops, optical_flow, labels = load_data(file_path)
-
-    # Generate variants
     variants = generate_variants(skeletal_data)
 
-    # Base name for output files
     base_name = os.path.splitext(os.path.basename(file_path))[0]
 
-    # Process and save each variant
     for name, skeletal_variant in variants:
         crops_aligned, flow_aligned = align_and_preprocess_modalities(
             skeletal_variant, crops, optical_flow, name
         )
 
         output_path = os.path.join(output_dir, f"{base_name}_{name}.npz")
-
-        np.savez(
+        np.savez_compressed(
             output_path,
             skeletal_data=skeletal_variant,
-            crops=crops_aligned,
-            optical_flow=flow_aligned,
-            labels=labels,
+            crops=crops_aligned.astype(np.float32),
+            optical_flow=flow_aligned.astype(np.float32),
+            labels=labels
         )
 
         print(

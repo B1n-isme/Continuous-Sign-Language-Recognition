@@ -11,3 +11,10 @@ def normalize_optical_flow(optical_flow):
     max_magnitude = max_magnitude if max_magnitude > eps else 1.0    
     
     return optical_flow / max_magnitude  # [-1, 1]
+
+def rotate_flow(flow, angle_deg):
+    """Rotate optical flow vectors by specified angle."""
+    angle_rad = np.deg2rad(angle_deg)
+    rot_mat = np.array([[np.cos(angle_rad), -np.sin(angle_rad)],
+                       [np.sin(angle_rad), np.cos(angle_rad)]])
+    return np.dot(flow, rot_mat.T)

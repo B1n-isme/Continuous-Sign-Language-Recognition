@@ -108,7 +108,7 @@ class ProcessingThread(QThread):
         NUM_LANDMARKS = 21
         NUM_COORDS = 3
         skeletal_data = np.zeros((self.max_hands, NUM_LANDMARKS, NUM_COORDS), dtype=np.float32)
-        crops_data = np.zeros((self.max_hands, *self.crop_size, 3), dtype=np.uint8)
+        crops_data = np.zeros((self.max_hands, *self.crop_size, 3), dtype=np.float32)
 
         if has_hands:
             for idx, hand_landmarks in enumerate(results.multi_hand_landmarks[: self.max_hands]):
@@ -341,7 +341,7 @@ class CSLRWindow(QMainWindow):
         sequence_length = len(self.skeletal_buffer)
         if sequence_length >= self.min_sequence_length:
             skeletal_array = np.array(self.skeletal_buffer)  # (T, 2, 21, 3)
-            crops_array = np.array(self.crops_buffer, dtype=np.uint8)  # (T, 2, 112, 112, 3)
+            crops_array = np.array(self.crops_buffer, dtype=np.float32)  # (T, 2, 112, 112, 3)
 
             # Compute optical flow from crops (assumed to be CPU-intensive)
             optical_flow_array = compute_optical_flow(crops_array)  # (T-1, 2, 2, 112, 112)

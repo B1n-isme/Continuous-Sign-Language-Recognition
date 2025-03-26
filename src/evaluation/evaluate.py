@@ -36,7 +36,7 @@ def evaluate_model(model, test_loader, device, use_lm=False, lm_path=None, beam_
             target_lengths = batch['target_lengths'].to(device)
 
             # Decode predictions (both return gloss strings)
-            with autocast():
+            with autocast(device_type="cuda"):
                 if use_lm:
                     pred_sequences = model.decode_with_lm(
                         skeletal, crops, optical_flow, input_lengths,

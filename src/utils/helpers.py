@@ -87,7 +87,7 @@ def resize_preserve_aspect_ratio(
     )
 
     # Create a canvas with the target size and padding color
-    canvas = np.full((target_height, target_width, 3), padding_color, dtype=np.uint8)
+    canvas = np.full((target_height, target_width, 3), padding_color, dtype=np.float32)
 
     # Calculate padding offsets (centered)
     x_offset = (target_width - new_width) // 2
