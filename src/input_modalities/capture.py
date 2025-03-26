@@ -2,6 +2,7 @@ import os
 import sys
 import cv2
 import numpy as np
+import h5py
 import queue
 from PyQt5.QtWidgets import (
     QApplication,
@@ -214,6 +215,17 @@ class DataSavingThread(QThread):
             if "optical_flow" not in self.data_to_save:
                 self.data_to_save["optical_flow"] = compute_optical_flow(self.data_to_save["crops"])
             np.savez_compressed(self.output_file, **self.data_to_save)
+
+            # with h5py.File(self.output_file, 'w') as f:
+            #     for key, value in self.data_to_save.items():
+            #         # For string data (labels), use a special string dtype.
+            #         if key == "labels":
+            #             value = np.array([s.encode("utf-8") for s in value])
+            #             dt = h5py.string_dtype(encoding='utf-8')
+            #             f.create_dataset(key, data=value, dtype=dt, compression="gzip", compression_opts=9, chunks=True)
+            #         else:
+            #             f.create_dataset(key, data=value, compression="gzip", chunks=True)
+            
             self.save_completed.emit(True, f"Data saved to {self.output_file}")
             print(f"Data saved to {self.output_file}")
         except Exception as e:

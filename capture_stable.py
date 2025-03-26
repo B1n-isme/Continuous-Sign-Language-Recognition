@@ -5,7 +5,6 @@ import argparse
 from datetime import datetime
 import threading
 import queue
-import subprocess
 
 # ----------------- Argument Parsing -----------------
 parser = argparse.ArgumentParser(description="Auto Video Recorder on Hand Detection")
@@ -31,7 +30,7 @@ fps = 30                   # Desired FPS for recording.
 record_duration = 1.0      # Recording length in seconds.
 recording = False          # True when recording is in progress.
 is_waiting_for_hand_release = False
-record_process = None      # FFmpeg subprocess for video encoding.
+video_writer = None
 record_start_time = None
 
 # Queues for decoupling frame capture and processing.
@@ -42,28 +41,6 @@ display_frame_lock = threading.Lock()
 
 # Flag to signal threads to stop.
 stop_threads = False
-
-# ----------------- Function: Start FFmpeg Writer -----------------
-def start_ffmpeg_writer(filename, width, height, fps):
-    command = [
-        'ffmpeg',
-        '-y',  # Overwrite output file if it exists.
-        '-f', 'rawvideo',
-        '-vcodec', 'rawvideo',
-        '-pixel_format', 'bgr24',
-        '-video_size', f'{width}x{height}',
-        '-framerate', str(fps),
-        '-i', '-',  # Input comes from stdin.
-        # '-c:v', 'h264_nvenc',  # Use Nvidia NVENC for hardware acceleration.
-        '-c:v', 'libx264',  # Use x264 for software encoding.
-        '-preset', 'fast',
-        filename
-    ]
-    try:
-        return subprocess.Popen(command, stdin=subprocess.PIPE)
-    except Exception as e:
-        print("Failed to start FFmpeg process:", e)
-        return None
 
 # ----------------- Capture Thread -----------------
 def capture_frames():
@@ -78,23 +55,24 @@ def capture_frames():
         try:
             frame_queue.put(frame, timeout=0.01)
         except queue.Full:
+            # Skip frame if queue is full.
             continue
 
 # ----------------- Processing (Detection & Recording) Thread -----------------
 def process_frames():
-    global recording, is_waiting_for_hand_release, record_process, record_start_time, latest_frame, stop_threads
+    global recording, is_waiting_for_hand_release, video_writer, record_start_time, latest_frame, stop_threads
     while not stop_threads:
         try:
             frame = frame_queue.get(timeout=0.05)
         except queue.Empty:
             continue
         
-        # Update latest_frame (for display) in a thread-safe manner.
+        # Update global latest_frame for display.
         with display_frame_lock:
             latest_frame = frame.copy()
         
         if not recording:
-            # Run hand detection only when not recording.
+            # Perform hand detection only if not recording.
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = hands_detector.process(frame_rgb)
             is_hand = results.multi_hand_landmarks is not None
@@ -104,45 +82,37 @@ def process_frames():
                 recording = True
                 record_start_time = time.time()
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # Using mp4 container with H264 codec for higher quality.
                 filename = f"{args.word}_{timestamp}.mp4"
                 print(f"Recording session started: {filename}")
+                fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H264 codec (ensure your OpenCV build supports it).
                 height, width = frame.shape[:2]
-                record_process = start_ffmpeg_writer(filename, width, height, fps)
-                if record_process is None or record_process.stdin is None:
-                    print("Error: FFmpeg process failed to start.")
+                video_writer = cv2.VideoWriter(filename, fourcc, fps, (width, height))
+                if not video_writer.isOpened():
+                    print("Error: VideoWriter failed to open.")
                     recording = False
                     continue
-                try:
-                    record_process.stdin.write(frame.tobytes())
-                except Exception as e:
-                    print("Error writing frame to FFmpeg process:", e)
-                    recording = False
-                    continue
+                # Write the current frame.
+                video_writer.write(frame)
             elif not is_hand:
-                # No hand detected: reset waiting flag.
+                # If no hand is detected, clear waiting flag.
                 is_waiting_for_hand_release = False
             else:
-                # Hand still present—keep waiting for its removal.
+                # Hand still present – keep waiting.
                 is_waiting_for_hand_release = True
         else:
-            # When recording, write each frame to FFmpeg.
-            if record_process is not None and record_process.stdin is not None:
-                try:
-                    record_process.stdin.write(frame.tobytes())
-                except Exception as e:
-                    print("Error writing frame during recording:", e)
-            # Check if recording duration has elapsed.
+            # When recording, write each frame to the video.
+            if video_writer is not None:
+                video_writer.write(frame)
+            # Check if the recording duration has been met.
             if time.time() - record_start_time >= record_duration:
                 recording = False
                 is_waiting_for_hand_release = True  # Wait for the hand to be removed.
-                if record_process is not None:
-                    try:
-                        record_process.stdin.close()
-                        record_process.wait()
-                    except Exception as e:
-                        print("Error closing FFmpeg process:", e)
-                    record_process = None
+                if video_writer is not None:
+                    video_writer.release()
+                    video_writer = None
                 print("Recording session ended.")
+        
         frame_queue.task_done()
 
 # ----------------- Start Threads -----------------
@@ -158,10 +128,11 @@ print("Starting hand detection. Press 'q' to exit.")
 while True:
     with display_frame_lock:
         if latest_frame is not None:
-            # Resize frame to 80% of its original resolution for display.
+            # Resize the frame to 80% of its original resolution for display.
             disp_frame = cv2.resize(latest_frame, None, fx=0.8, fy=0.8, interpolation=cv2.INTER_AREA)
         else:
             continue
+    
     cv2.imshow("Auto Video Recording", disp_frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         stop_threads = True
