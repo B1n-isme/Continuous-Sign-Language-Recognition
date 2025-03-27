@@ -132,7 +132,7 @@ if __name__ == "__main__":
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    vocab_size = 14  # 13 glosses + 1 blank
+    vocab_size = 6  # 13 glosses + 1 blank
 
     model_config = load_config("configs/model_config.yaml")
     spatial_params = model_config["spatial_params"]
@@ -150,8 +150,8 @@ if __name__ == "__main__":
     # Create dummy input data
     B, T, num_hands = 1, 156, 2
     skeletal = torch.randn(B, T, num_hands, 21, 3).to(device)
-    crops = torch.randn(B, T, num_hands, 3, 112, 112).to(device)
-    optical_flow = torch.randn(B, T, num_hands, 2, 112, 112).to(device)
+    crops = torch.randn(B, T, num_hands, 3, 224, 224).to(device)
+    optical_flow = torch.randn(B, T, num_hands, 2, 224, 224).to(device)
     input_lengths = torch.full((B,), T, dtype=torch.long).to(device)
     
     # Greedy decoding (original)
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     print(f"Greedy Decoded (indices): {decoded_greedy}")
     # print(f"Greedy Decoded (glosses): {' '.join([model.idx_to_gloss[idx] for idx in decoded_greedy[0]])}")
     
-    # # Beam search decoding with LM
+    # # # Beam search decoding with LM
     # lm_path = "models\checkpoints\kenlm.binary"  # Replace with actual path to your KenLM binary file
     # decoded_beam = model.decode_with_lm(skeletal, crops, optical_flow, input_lengths, lm_path=lm_path, beam_size=10)
     # print(f"Beam Decoded (glosses): {' '.join(decoded_beam[0])}")

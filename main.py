@@ -4,6 +4,7 @@ import sys
 import cv2
 import numpy as np
 import torch
+from torch.amp import autocast, GradScaler
 import queue
 from PyQt5.QtWidgets import (
     QApplication,
@@ -23,6 +24,7 @@ from src.feature_extraction.crop_aug import normalize_crops
 from src.feature_extraction.flow_aug import normalize_optical_flow
 from src.models.model import CSLRModel
 from src.input_modalities.optical_farneback import compute_optical_flow
+from src.models.ema import EMA, get_decay
 
 # -------------------- Capture & Processing Threads --------------------
 
@@ -118,7 +120,7 @@ class ProcessingThread(QThread):
                 color = (0, 0, 255) if hand_type == "Left" else (0, 255, 0)
                 
                 # Optionally draw landmarks if needed (e.g. for debug)
-                # self.mp_drawing.draw_landmarks(annotated, hand_landmarks, mp.solutions.hands.HAND_CONNECTIONS)
+                self.mp_drawing.draw_landmarks(annotated, hand_landmarks, mp.solutions.hands.HAND_CONNECTIONS)
 
                 # Compute bounding box with margin
                 x_min, y_min, x_max, y_max = get_bounding_box(hand_landmarks, self.frame_width, self.frame_height, margin=self.CROP_MARGIN)
@@ -164,7 +166,7 @@ class CSLRWindow(QMainWindow):
 
         # Device and model setup
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.checkpoint_path = "checkpoints/best_model.pt"
+        self.checkpoint_path = "models/checkpoints/best_model.pt"
         self.vocab = self.load_vocab("data/label-idx-mapping.json")
         self.vocab_size = len(self.vocab)
         self.idx_to_gloss = {idx: gloss for gloss, idx in self.vocab.items()}
@@ -183,7 +185,7 @@ class CSLRWindow(QMainWindow):
 
         # Constants for pre-allocation in processing thread
         self.MAX_HANDS = 2
-        self.CROP_SIZE = (112, 112)
+        self.CROP_SIZE = (224, 224)
 
         # GUI components
         self.video_label = QLabel(self)
@@ -280,8 +282,24 @@ class CSLRWindow(QMainWindow):
             label_mapping_path="data/label-idx-mapping.json",
             device=self.device,
         ).to(self.device)
-        checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=True)
-        model.load_state_dict(checkpoint)
+        # Load checkpoint
+        try:
+            checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=True)
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint)
+
+            # Load EMA if available
+            if 'ema_shadow' in checkpoint:
+                ema = EMA(model)
+                ema.shadow = checkpoint['ema_shadow']
+                ema.apply_shadow()
+                if 'ema_decay' in checkpoint:
+                    ema.decay = checkpoint['ema_decay']
+        except Exception as e:
+            print(f"Failed to load model checkpoint: {e}")
+            raise
         model.eval()
         return model
 
@@ -347,7 +365,7 @@ class CSLRWindow(QMainWindow):
             optical_flow_array = compute_optical_flow(crops_array)  # (T-1, 2, 2, 112, 112)
             T = skeletal_array.shape[0]
             if optical_flow_array.shape[0] == T - 1:
-                zero_flow = np.zeros((1, 2, 112, 112, 2), dtype=optical_flow_array.dtype)
+                zero_flow = np.zeros((1, 2, 224, 224, 2), dtype=optical_flow_array.dtype)
                 optical_flow_padded = np.concatenate([zero_flow, optical_flow_array], axis=0)
             else:
                 optical_flow_padded = optical_flow_array
@@ -377,9 +395,10 @@ class CSLRWindow(QMainWindow):
 
             # Model inference
             with torch.no_grad():
-                # pred_sequences = self.model.decode(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths)
-                pred_sequences = self.model.decode_with_lm(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths, lm_path=lm_path, beam_size=10, lm_weight=0.5)
-                # pred_glosses = " ".join([self.idx_to_gloss[idx] for idx in pred_sequences[0]])
+                with autocast(device_type="cpu"):
+                    pred_sequences = self.model.decode(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths)
+                    # pred_sequences = self.model.decode_with_lm(skeletal_tensor, crops_tensor, optical_flow_tensor, input_lengths, lm_path=lm_path, beam_size=10, lm_weight=0.5)
+                    # pred_glosses = " ".join([self.idx_to_gloss[idx] for idx in pred_sequences[0]])
                 pred_glosses = " ".join(pred_sequences[0])
                 self.prediction_label.setText(f"Prediction: {pred_glosses}")
         else:

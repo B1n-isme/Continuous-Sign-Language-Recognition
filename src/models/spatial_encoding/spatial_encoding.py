@@ -220,8 +220,8 @@ class SpatialEncoding(nn.Module):
         
         # Flatten inputs: merge batch and time*hand dimensions (e.g., left/right)
         skeletal_flat = skeletal.reshape(B*T*2, 21, 3).to(self.device)
-        crops_flat = crops.reshape(B*T*2, 3, 112, 112).to(self.device)
-        flow_flat = optical_flow.reshape(B*T*2, 2, 112, 112).to(self.device)
+        crops_flat = crops.reshape(B*T*2, 3, 224, 224).to(self.device)
+        flow_flat = optical_flow.reshape(B*T*2, 2, 224, 224).to(self.device)
         
         # Stack flow channels with zero-padding to make 3 channels
         # (B*T*2, 2, H, W) -> (B*T*2, 3, H, W)
@@ -289,7 +289,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = SpatialEncoding(D_spatial=128, device=device)
     skeletal = torch.randn(4, 114, 2, 21, 3)
-    crops = torch.randn(4, 114, 2, 3, 112, 112)
-    optical_flow = torch.randn(4, 114, 2, 2, 112, 112)
+    crops = torch.randn(4, 114, 2, 3, 224, 224)
+    optical_flow = torch.randn(4, 114, 2, 2, 224, 224)
     output = model(skeletal, crops, optical_flow)
     print(f"Output shape: {output.shape}")  # Expected: (4, 114, 2, 128)

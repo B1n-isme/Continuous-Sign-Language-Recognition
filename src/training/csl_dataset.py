@@ -36,7 +36,7 @@ class CSLDataset(Dataset):
         
         # Pad optical flow to T frames
         T = skeletal_data.shape[0]
-        zero_flow = np.zeros((1, 2, 112, 112, 2), dtype=optical_flow.dtype)
+        zero_flow = np.zeros((1, 2, 224, 224, 2), dtype=optical_flow.dtype)
         optical_flow_padded = np.concatenate([zero_flow, optical_flow], axis=0)  # (T, 2, 112, 112, 2)
         
         # Get targets and convert to indices
@@ -131,8 +131,8 @@ if __name__ == "__main__":
     import os
     for fp in file_list:
         np.savez(fp, skeletal_data=np.random.rand(10, 2, 21, 3),
-                 crops=np.random.rand(10, 2, 112, 112, 3),
-                 optical_flow=np.random.rand(9, 2, 112, 112, 2))
+                 crops=np.random.rand(10, 2, 224, 224, 3),
+                 optical_flow=np.random.rand(9, 2, 224, 224, 2))
 
     dataset = CSLDataset(file_list, label_dict, vocab, device=device)
     from torch.utils.data import DataLoader
